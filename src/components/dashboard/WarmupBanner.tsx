@@ -20,9 +20,10 @@ export default function WarmupBanner({
         </span>
       </div>
       <p className="mt-1.5 text-xs leading-relaxed text-arcade-dim">
-        Collecting BRTI history — {marketsUsed}/{marketsRequired} completed markets in the
-        volatility lookback window ({sampleSize.toLocaleString()} clean 5s returns so far). The
-        model will not paper-trade until enough history exists to trust the vol estimate.
+        Collecting BRTI history — {marketsUsed.toFixed(1)}/{marketsRequired} market-widths
+        covered in the volatility lookback window ({sampleSize.toLocaleString()} clean 5s returns
+        so far). The model will not paper-trade until enough history exists to trust the vol
+        estimate.
       </p>
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-black/40">
         <div

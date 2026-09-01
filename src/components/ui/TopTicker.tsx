@@ -1,15 +1,20 @@
 "use client";
 
 import { useAppState } from "@/hooks/useAppState";
-import { formatPrice, timeAgo } from "@/lib/format";
+import { useNow } from "@/hooks/useNow";
+import { formatPrice } from "@/lib/format";
 import clsx from "@/lib/clsx";
 
 export default function TopTicker() {
   const { state, error } = useAppState();
+  const now = useNow(1000);
+
+  const brtiAgeSec = state?.brti
+    ? Math.max(0, Math.round((now - new Date(state.brti.timestamp).getTime()) / 1000))
+    : null;
 
   const live = !!state?.brti && !error;
-  const stale =
-    !!state?.brti && Date.now() - new Date(state.brti.timestamp).getTime() > 15_000;
+  const stale = brtiAgeSec !== null && brtiAgeSec > 15;
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/5 bg-arcade-bg/90 backdrop-blur-md">
@@ -30,8 +35,10 @@ export default function TopTicker() {
           {state?.brti ? (
             <span className="tabular font-mono text-sm text-arcade-text">
               ${formatPrice(state.brti.value)}
-              <span className="ml-1.5 text-[10px] text-arcade-dim">
-                {stale ? `stale · ${timeAgo(state.brti.timestamp)}` : "BRTI"}
+              <span
+                className={clsx("ml-1.5 text-[10px]", stale ? "text-arcade-no" : "text-arcade-dim")}
+              >
+                {brtiAgeSec}s ago
               </span>
             </span>
           ) : (

@@ -7,7 +7,8 @@ import { settlementWindowFor } from "@/lib/quant/settlement";
 import { ingestBrtiTick, ingestBrtiTicks } from "./brtiIngest";
 import { syncMarkets } from "./marketTracker";
 import { getBestAsksForMarket } from "./marketData";
-import { computeRollingVolatility, type RollingVolatility } from "./volatilityWindow";
+import { computeRollingVolatility, MARKET_DURATION_MS, type RollingVolatility } from "./volatilityWindow";
+import { ensureVolatilityHistoryBackfilled } from "./backfill";
 import { getSettings, type StrategySettings } from "./settings";
 import { MAX_BRTI_STALENESS_MS } from "./constants";
 import type { Market as MarketRow } from "@prisma/client";
@@ -22,11 +23,13 @@ export interface EngineTickResult {
 }
 
 /**
- * Runs one full 5-second engine cycle:
+ * Runs one full engine cycle:
  *  1. ingest the latest BRTI observation
- *  2. detect new/transitioned markets and settle any that just closed
- *  3. recompute rolling realized volatility
- *  4. for every open market: run the Monte Carlo model, persist a snapshot,
+ *  2. backfill the volatility lookback window from Binance if real Kalshi
+ *     history doesn't cover it yet (no-ops once it does — see backfill.ts)
+ *  3. detect new/transitioned markets and settle any that just closed
+ *  4. recompute rolling realized volatility
+ *  5. for every open market: run the Monte Carlo model, persist a snapshot,
  *     and paper-enter a position if edge clears the configured threshold
  *
  * `opts.latestBrti` lets a caller with its own polling loop (the standalone
@@ -71,6 +74,8 @@ export async function runEngineTick(
     brtiError = err instanceof Error ? err.message : "BRTI fetch failed";
     console.error("[engine] BRTI ingestion failed", err);
   }
+
+  await ensureVolatilityHistoryBackfilled(settings.lookbackMarkets * MARKET_DURATION_MS, now);
 
   const openMarkets = await syncMarkets(now);
   const volatility = await computeRollingVolatility(settings.lookbackMarkets, now);

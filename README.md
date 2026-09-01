@@ -32,11 +32,14 @@ good before reading anything into the P&L.
    than a websocket here is deliberate — see "Why there's a separate collector process"
    below.
 3. **Volatility** — realized vol is estimated as the standard deviation of
-   5-second-equivalent log returns across the previous *N* (default 10) **completed**
-   markets, using the full persisted BRTI history spanning them
-   (`src/lib/quant/volatility.ts`, `src/lib/engine/volatilityWindow.ts`). Below a minimum
-   clean-sample threshold, or with fewer than *N* completed markets on record, the app
-   is in **warm-up mode**: it displays that plainly and does not paper-trade.
+   5-second-equivalent log returns across the previous *N × 15* minutes (default 10, so
+   150 minutes) of persisted BRTI tick history (`src/lib/quant/volatility.ts`,
+   `src/lib/engine/volatilityWindow.ts`). Below a minimum clean-sample threshold, or with
+   less than ~95% of that window actually covered, the app is in **warm-up mode**: it
+   displays that plainly and does not paper-trade. On first run, that window is seeded
+   instantly from public Binance BTCUSDT history (`src/lib/engine/backfill.ts`) rather
+   than waiting hours for live-only Kalshi coverage to build up — see "Volatility
+   backfill" below for exactly what that does and doesn't affect.
 4. **Monte Carlo** — ~10,000 zero-drift GBM paths are simulated from the current BRTI
    price straight to `close_time - 60s` (a single log-normal jump is exact for a
    driftless GBM, so no need to step every intermediate 5s), then stepped
@@ -60,6 +63,27 @@ good before reading anything into the P&L.
    specifically so the raw BRTI/strike/time-remaining/asks/probabilities/edges are
    available for later strategy research, independent of whether that tick triggered a
    trade.
+
+## Volatility backfill (Binance)
+
+Waiting for enough live Kalshi BRTI history to trust a volatility estimate takes real
+hours (`lookbackMarkets × 15` minutes — 2.5 hours with the default of 10). Rather than
+sit in warm-up that whole time, the engine checks on every tick whether the persisted
+BRTI history actually covers the required window; if it doesn't yet, it fetches that much
+BTCUSDT 1-second close history from Binance's public API (no credentials, no rate-limit
+concerns for personal use) and seeds it into the same table, tagged with a distinct
+`BACKFILL` source so it's never confused with a real Kalshi observation
+(`src/lib/engine/backfill.ts`). This is a one-time effective no-op once coverage is
+sufficient — later ticks just see the window is already covered and skip it.
+
+**What this does and doesn't affect:** Binance is used *only* to seed the historical
+window that feeds the realized-volatility number. It never touches anything settlement-
+relevant — the live current price, the 60-second settlement-window averaging, and the
+actual paper-trade decisions all come exclusively from real Kalshi BRTI, always. BTCUSDT
+spot is a reasonable volatility proxy for a synthetic composite index like BRTI, but it
+isn't identical to it, so treat the very first few minutes of vol estimate post-backfill
+as a starting point that keeps refining itself as real Kalshi data phases in and eventually
+dominates the window.
 
 ## Why there's a separate collector process
 
@@ -174,10 +198,10 @@ npm run build && npm run dev   # build applies the schema, then starts the dashb
 npm run collector              # in a second terminal — the always-on data collector
 ```
 
-Leave the collector running. On first run you'll see the **warm-up** banner until enough
-BRTI history and completed markets accumulate (roughly `lookbackMarkets × 15` minutes,
-10 × 15 = ~2.5 hours with defaults) — this is expected and by design; the app refuses to
-trade on an unreliable volatility estimate.
+Leave the collector running. Thanks to the Binance backfill (see above), warm-up mode
+should clear within the first couple of ticks rather than taking hours — if it's still
+showing warm-up after a minute or two, check the collector's logs for a
+`[backfill]` error.
 
 ### 4. Tests
 

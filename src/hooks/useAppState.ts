@@ -3,8 +3,26 @@
 import useSWR from "swr";
 import type { AppStateDTO, AnalyticsDTO } from "@/types/api";
 
+const CLIENT_FETCH_TIMEOUT_MS = 12_000;
+
+/**
+ * A hung request (dropped connection, a stalled proxy) would otherwise
+ * block forever and stall SWR's refresh loop entirely — it only schedules
+ * the next poll after the current fetcher call settles. Bounding every
+ * request means a bad one fails fast and the next 5s cycle still fires.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLIENT_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetchWithTimeout(url, { cache: "no-store" });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error ?? `${url} -> ${res.status}`);
@@ -36,7 +54,7 @@ export function useAppState(opts: { heartbeat?: boolean } = {}) {
       let tickError: string | null = null;
       if (opts.heartbeat) {
         try {
-          const res = await fetch("/api/tick", { method: "POST" });
+          const res = await fetchWithTimeout("/api/tick", { method: "POST" });
           const body = await res.json().catch(() => null);
           if (!res.ok) tickError = body?.error ?? `tick failed (${res.status})`;
           else if (body?.brtiError) tickError = body.brtiError;
