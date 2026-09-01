@@ -1,8 +1,9 @@
 import { getBestAsks, getMarket } from "@/lib/kalshi/client";
-import type { BestAsks } from "@/lib/kalshi/types";
+import { dollarsToCents, type BestAsks } from "@/lib/kalshi/types";
 
 /**
- * Prefers the best-ask fields on the market object itself; falls back to
+ * Prefers the best-ask fields on the market object itself (`yes_ask_dollars`
+ * / `no_ask_dollars` — confirmed via /api/debug/kalshi); falls back to
  * deriving them from the orderbook's resting bids if the market object
  * doesn't carry them. Both calls run concurrently rather than the
  * market-detail request needing to fail first, since latency (this runs
@@ -16,9 +17,10 @@ export async function getBestAsksForMarket(ticker: string): Promise<BestAsks> {
   ]);
 
   if (marketResult.status === "fulfilled") {
-    const m = marketResult.value;
-    if (typeof m.yes_ask === "number" && typeof m.no_ask === "number") {
-      return { yesAskCts: m.yes_ask, noAskCts: m.no_ask };
+    const yesAskCts = dollarsToCents(marketResult.value.yes_ask_dollars);
+    const noAskCts = dollarsToCents(marketResult.value.no_ask_dollars);
+    if (yesAskCts !== null && noAskCts !== null) {
+      return { yesAskCts, noAskCts };
     }
   }
 

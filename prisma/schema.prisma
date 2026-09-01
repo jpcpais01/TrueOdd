@@ -81,8 +81,8 @@ model ModelSnapshot {
   brti            Float
   strike          Float
   timeRemainingMs Int
-  yesAsk          Int // cents, 1-99
-  noAsk           Int // cents, 1-99
+  yesAsk          Float // cents — fractional (Kalshi supports sub-cent pricing), 0-100
+  noAsk           Float // cents — fractional, 0-100
   modelYes        Float // probability 0-1
   modelNo         Float
   edgeYes         Float
@@ -102,7 +102,7 @@ model Trade {
   marketId       String
   market         Market    @relation(fields: [marketId], references: [id], onDelete: Cascade)
   side           Side
-  entryPriceCts  Int // best ask paid, in cents
+  entryPriceCts  Float // best ask paid, in cents — fractional, 0-100
   stake          Float // dollars risked
   contracts      Int
   modelProb      Float // model probability of the traded side at entry

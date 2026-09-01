@@ -30,8 +30,11 @@ export function formatCountdown(ms: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+/** Kalshi supports sub-cent pricing near 0/1 (e.g. 0.2¢, 99.9¢), so this
+ * rounds to 2 decimal places but drops trailing zeros rather than always
+ * showing a fixed number of them. */
 export function formatCents(cents: number): string {
-  return `${cents}¢`;
+  return `${Number(cents.toFixed(2))}¢`;
 }
 
 export function timeAgo(date: string | Date): string {
