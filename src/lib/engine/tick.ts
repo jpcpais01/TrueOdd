@@ -72,8 +72,25 @@ export async function runEngineTick(
 
   let tradesOpened: string[] = [];
   if (brti) {
+    // Each market is processed independently and must not be able to take
+    // the others down with it: a transient failure for one market (a
+    // one-off DB hiccup, a bad orderbook response) used to reject this
+    // whole Promise.all, aborting the tick before ANY ModelSnapshot got
+    // written — even for markets that were fine. Since BRTI itself is
+    // ingested earlier and independently, the dashboard's live price kept
+    // updating while the ask/model/edge numbers (sourced from
+    // ModelSnapshot) silently froze until a later tick happened to
+    // succeed for every market at once. Isolating each call here means one
+    // market's failure only skips that market for this tick.
     const opened = await Promise.all(
-      openMarkets.map((market) => processMarket(market, brti, volatility, settings, now, opts.regime)),
+      openMarkets.map(async (market) => {
+        try {
+          return await processMarket(market, brti, volatility, settings, now, opts.regime);
+        } catch (err) {
+          console.error(`[engine] processMarket failed for ${market.id}`, err);
+          return false;
+        }
+      }),
     );
     tradesOpened = openMarkets.filter((_, i) => opened[i]).map((m) => m.id);
   }

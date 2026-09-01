@@ -46,8 +46,17 @@ export async function POST() {
     });
   } catch (err) {
     console.error("[api/tick] engine tick failed", err);
+    // Still try to hand back the freshest available state (e.g. a BRTI tick
+    // that already landed before the failure) rather than forcing the
+    // client to fall back to a separate, slower GET /api/state round trip.
+    let state: Awaited<ReturnType<typeof buildStateView>> | undefined;
+    try {
+      state = await buildStateView();
+    } catch {
+      // DB is genuinely unreachable — nothing to hand back.
+    }
     return NextResponse.json(
-      { skipped: false, error: err instanceof Error ? err.message : "unknown error" },
+      { skipped: false, error: err instanceof Error ? err.message : "unknown error", state },
       { status: 502 },
     );
   }
