@@ -29,6 +29,21 @@ const CACHE_TTL_MS = 30_000;
  * markets to have actually settled first, which could otherwise take hours
  * even with a full backfill sitting in the BrtiTick table unused.
  *
+ * Warm-up itself is driven purely by `estimateVolatility`'s own sample-size
+ * check (enough clean log returns to trust the estimate) — NOT by how much
+ * of the requested time window is literally covered by rows in the DB. An
+ * earlier version additionally required ~95% of the full lookback window
+ * to be covered by wall-clock-old data before clearing warm-up; that meant
+ * that if the one-shot Binance backfill ever failed or came back partial
+ * (a transient network hiccup, a slow first request), the app would fall
+ * back to waiting out the *entire* lookback window in real time — up to
+ * hours — before warm-up cleared, even once plenty of clean backfilled
+ * returns were sitting in the table. A successful Binance backfill already
+ * hands us `lookbackMarkets * 15` minutes of 1-minute-spaced closes in one
+ * request, which is far more than the ~100 clean returns needed to trust
+ * the estimate — so sample size is both sufficient and the only signal
+ * that should gate trading.
+ *
  * Cached in the DB (see the VolatilityCache model) for CACHE_TTL_MS so
  * repeated calls a few seconds apart — the normal case on every code path
  * in this app — reuse the same estimate instead of rescanning the full
@@ -66,14 +81,13 @@ export async function computeRollingVolatility(
     ticks.map((t) => ({ timestamp: t.timestamp.getTime(), value: t.value })),
   );
 
+  // Coverage (how much of the requested window has any data at all) is
+  // kept purely as a display/progress figure for the warm-up banner — see
+  // the doc comment above for why it no longer gates `warmup` itself.
   const coverageMs = ticks.length > 0 ? now.getTime() - ticks[0]!.timestamp.getTime() : 0;
-  // Require close to full coverage (95%) rather than exact, so a few
-  // minutes of unavoidable startup lag don't keep it in warm-up forever.
-  const coverageWarmup = coverageMs < requiredMs * 0.95;
 
   const rolling: RollingVolatility = {
     ...result,
-    warmup: result.warmup || coverageWarmup,
     marketsUsed: Math.min(lookbackMarkets, coverageMs / MARKET_DURATION_MS),
     marketsRequired: lookbackMarkets,
   };

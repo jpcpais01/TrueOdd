@@ -39,11 +39,23 @@ interface BinanceKlineRow extends Array<unknown> {
   4: string; // close price
 }
 
+const BACKFILL_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Fetches the trailing `minutes` of BTCUSDT 1-minute close prices, sorted
- * chronologically, in a single request. Returns an empty array (never
- * throws) on any failure — the caller treats that as "try again next
- * tick" rather than a hard error.
+ * chronologically, in a single request. Retries a couple of times on a
+ * transient failure (a dropped connection, a momentary 5xx) with a short
+ * fixed delay before giving up — this is the only thing standing between
+ * "warm-up clears in one request" and "warm-up clears whenever the next
+ * tick happens to retry it," so it's worth not giving up on the first
+ * hiccup. Returns an empty array (never throws) only once every attempt
+ * has failed — the caller treats that as "try again next tick" rather
+ * than a hard error.
  */
 export async function fetchBinanceHistory(minutes: number): Promise<BackfillTick[]> {
   const endMs = Date.now();
@@ -56,24 +68,29 @@ export async function fetchBinanceHistory(minutes: number): Promise<BackfillTick
   url.searchParams.set("endTime", String(endMs));
   url.searchParams.set("limit", String(Math.min(MAX_ROWS_PER_CALL, minutes + 5)));
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
-  try {
-    const res = await fetch(url.toString(), { signal: controller.signal, cache: "no-store" });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      console.error(`[binance] klines request failed: HTTP ${res.status} ${body.slice(0, 300)}`);
-      return [];
+  for (let attempt = 1; attempt <= BACKFILL_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch(url.toString(), { signal: controller.signal, cache: "no-store" });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(
+          `[binance] klines request failed (attempt ${attempt}/${BACKFILL_ATTEMPTS}): HTTP ${res.status} ${body.slice(0, 300)}`,
+        );
+      } else {
+        const rows = (await res.json()) as BinanceKlineRow[];
+        return rows
+          .map((row) => ({ timestamp: Number(row[0]), value: Number(row[4]) }))
+          .filter((t) => Number.isFinite(t.timestamp) && Number.isFinite(t.value) && t.value > 0)
+          .sort((a, b) => a.timestamp - b.timestamp);
+      }
+    } catch (err) {
+      console.error(`[binance] klines request failed (attempt ${attempt}/${BACKFILL_ATTEMPTS}):`, err);
+    } finally {
+      clearTimeout(timer);
     }
-    const rows = (await res.json()) as BinanceKlineRow[];
-    return rows
-      .map((row) => ({ timestamp: Number(row[0]), value: Number(row[4]) }))
-      .filter((t) => Number.isFinite(t.timestamp) && Number.isFinite(t.value) && t.value > 0)
-      .sort((a, b) => a.timestamp - b.timestamp);
-  } catch (err) {
-    console.error("[binance] klines request failed:", err);
-    return [];
-  } finally {
-    clearTimeout(timer);
+    if (attempt < BACKFILL_ATTEMPTS) await sleep(RETRY_DELAY_MS);
   }
+  return [];
 }

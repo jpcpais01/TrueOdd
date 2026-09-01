@@ -27,16 +27,18 @@ good before reading anything into the P&L.
 2. **BRTI collection** — the current BRTI value is read via Kalshi's CF Benchmarks REST
    passthrough (`GET /cfbenchmarks/values?id=BRTI`, signed the same way as every other
    Kalshi request) and persisted, deduplicated to one row per second
-   (`src/lib/engine/brtiIngest.ts`). This runs on a 1-second poll from the standalone
+   (`src/lib/engine/brtiIngest.ts`). This runs on a 500ms poll from the standalone
    collector, and once per tick from the dashboard's heartbeat / cron. Using REST rather
    than a websocket here is deliberate — see "Why there's a separate collector process"
    below.
 3. **Volatility** — realized vol is estimated as the standard deviation of
    5-second-equivalent log returns across the previous *N × 15* minutes (default 10, so
    150 minutes) of persisted BRTI tick history (`src/lib/quant/volatility.ts`,
-   `src/lib/engine/volatilityWindow.ts`). Below a minimum clean-sample threshold, or with
-   less than ~95% of that window actually covered, the app is in **warm-up mode**: it
-   displays that plainly and does not paper-trade. On first run, that window is seeded
+   `src/lib/engine/volatilityWindow.ts`). Below a minimum clean-sample threshold (100
+   clean log returns) the app is in **warm-up mode**: it displays that plainly and does
+   not paper-trade. That threshold is purely about the number of trustworthy samples, not
+   how much wall-clock time has passed — so a successful Binance backfill (below) clears
+   it in the next tick or two, not hours later. On first run, that window is seeded
    instantly from public Binance BTCUSDT history (`src/lib/engine/backfill.ts`) rather
    than waiting hours for live-only Kalshi coverage to build up — see "Volatility
    backfill" below for exactly what that does and doesn't affect.
@@ -49,7 +51,7 @@ good before reading anything into the P&L.
    one-second BRTI observations), not just the final tick (`src/lib/quant/montecarlo.ts`).
    The standalone collector doesn't redraw all 10,000 paths on every tick: it precomputes
    a `SimulationRegime` (the random shocks) once per volatility estimate and cheaply
-   re-prices it against the latest price/time-remaining every second — mathematically
+   re-prices it against the latest price/time-remaining every cycle — mathematically
    valid because a driftless GBM's future distribution depends only on the current state,
    not simulation history. The regime itself is only regenerated every 5 minutes (or when
    the volatility estimate meaningfully updates); the dashboard/serverless path has
@@ -74,7 +76,10 @@ BTCUSDT 1-minute close history from Binance's public API (no credentials) and se
 into the same table, tagged with a distinct `BACKFILL` source so it's never confused with
 a real Kalshi observation (`src/lib/engine/backfill.ts`, `src/lib/binance/klines.ts`).
 This is a one-time effective no-op once coverage is sufficient — later ticks just see the
-window is already covered and skip it.
+window is already covered and skip it. The request retries automatically (3 attempts, a
+short fixed delay) on a transient failure, since one dropped connection used to mean
+falling all the way back to waiting out the *entire* lookback window live before warm-up
+would clear (see "Warm-up mode isn't clearing" below).
 
 Uses **api.binance.us**, not api.binance.com: Binance.com geofences requests from
 US-located IPs (HTTP 451, "restricted location"), and Vercel builds default to a US
@@ -86,6 +91,15 @@ bars rather than 1-second: one API call covers the whole window (150 rows for th
 default lookback, well under Binance's 1000-row cap) instead of several chunked calls,
 and it sidesteps any uncertainty about whether Binance.US has rolled out the newer
 1-second interval the same way binance.com has.
+
+**Warm-up mode isn't clearing:** warm-up is gated purely on having ≥100 clean log returns
+in the lookback window (`MIN_RETURNS_FOR_RELIABLE_VOL` in `src/lib/quant/volatility.ts`)
+— *not* on how much of the window's time span is literally covered by rows in the DB. A
+single successful Binance backfill (~150 one-minute-spaced returns for the default
+lookback) clears it outright, in one or two ticks. If it's still stuck, the backfill
+itself is failing — check server/collector logs for a `[binance]` or `[backfill]` line;
+the usual cause is the geofencing above, an outbound-network restriction on your host, or
+Binance.US rate-limiting the deploy's IP.
 
 **What this does and doesn't affect:** Binance is used *only* to seed the historical
 window that feeds the realized-volatility number. It never touches anything settlement-
@@ -117,22 +131,23 @@ different BRTI integrations, used by two different code paths, not one:
 So there are still three ways data gets collected, and you'll likely want more than one:
 
 - **`npm run collector`** — a standalone Node process (`scripts/collector.ts`) that runs
-  a full engine cycle **every second** off the live websocket feed (market sync, Monte
+  a full engine cycle **every 500ms** off the live websocket feed (market sync, Monte
   Carlo, snapshot persistence, paper-trade evaluation), continuously, independent of
-  anyone viewing the dashboard. It's cheap enough at 1-second cadence because it
+  anyone viewing the dashboard. It's cheap enough at sub-second cadence because it
   precomputes a `SimulationRegime` once and re-prices it every tick rather than
   resimulating from scratch (see "How it works" above), refreshing that regime — and only
   then drawing fresh randomness — once every 5 minutes. Run this anywhere that stays on: a
   small VPS, Railway/Fly/Render, a Raspberry Pi, `pm2`/`systemd`/`tmux` on your own
   machine — pointed at the **same** `DATABASE_URL` as your Vercel deployment. This is what
   actually builds and maintains the rolling BRTI history needed to exit warm-up mode, and
-  it's the only path that gets you genuine sub-5-second, push-driven freshness — **if you
+  it's the only path that gets you genuine sub-second, push-driven freshness — **if you
   want the dashboard to feel truly live, this is the piece to run.**
 - **The dashboard itself** also drives the engine: while the main screen (`/`) is open in
-  a browser, it POSTs `/api/tick` every 5 seconds as a heartbeat, so opening the app is
-  enough to collect data and trade in real time even without the worker running — just at
-  5-second cadence with a fresh (not cached) simulation each time, since a stateless
-  serverless invocation has nowhere to keep a regime between requests.
+  a browser, it POSTs `/api/tick` every 250ms as a heartbeat (server-side throttled to at
+  most once every 250ms across all open tabs), so opening the app is enough to collect
+  data and trade in real time even without the worker running — just with a fresh (not
+  cached) simulation each time, since a stateless serverless invocation has nowhere to
+  keep a regime between requests.
 - **Vercel Cron** is *optional* and off by default (no `vercel.json` crons block, so the
   project imports cleanly on the free Hobby plan). `/api/cron/tick` exists and works —
   it's just not wired to a schedule out of the box, because Hobby only allows daily cron,

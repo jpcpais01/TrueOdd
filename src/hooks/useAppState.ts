@@ -79,9 +79,9 @@ export function useAppState(opts: { heartbeat?: boolean } = {}) {
       }
     },
     {
-      refreshInterval: opts.heartbeat ? 500 : 5000,
+      refreshInterval: opts.heartbeat ? 250 : 5000,
       revalidateOnFocus: true,
-      dedupingInterval: 400,
+      dedupingInterval: 200,
     },
   );
 

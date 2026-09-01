@@ -18,13 +18,14 @@
  *
  * Two independent timers:
  *
- *  - Every second: a full engine cycle (use the latest websocket tick if
- *    fresh, else self-fetch over REST; market sync; Monte Carlo; snapshot
- *    persistence; paper-trade evaluation). The Monte Carlo step reuses a
- *    precomputed SimulationRegime (see src/lib/quant/montecarlo.ts) instead
- *    of drawing 10,000 fresh random paths every second — a cheap re-pricing
- *    of the same underlying random shocks against the latest price and
- *    time-remaining, which is what makes 1-second cadence practical.
+ *  - Every TICK_INTERVAL_MS (default 500ms): a full engine cycle (use the
+ *    latest websocket tick if fresh, else self-fetch over REST; market
+ *    sync; Monte Carlo; snapshot persistence; paper-trade evaluation). The
+ *    Monte Carlo step reuses a precomputed SimulationRegime (see
+ *    src/lib/quant/montecarlo.ts) instead of drawing 10,000 fresh random
+ *    paths every cycle — a cheap re-pricing of the same underlying random
+ *    shocks against the latest price and time-remaining, which is what
+ *    makes sub-second cadence practical.
  *  - Every REGIME_REFRESH_MS (default 5 minutes): recompute realized
  *    volatility from the DB and regenerate the regime from it. This is the
  *    only point where new randomness is drawn and where a changed
@@ -39,7 +40,7 @@ import { openBrtiStream } from "../src/lib/kalshi/brtiStream";
 import { ingestBrtiTick } from "../src/lib/engine/brtiIngest";
 import type { BrtiTick } from "../src/lib/kalshi/brti";
 
-const TICK_INTERVAL_MS = 1000;
+const TICK_INTERVAL_MS = 500;
 const REGIME_REFRESH_MS = 5 * 60 * 1000;
 /** How old a websocket-delivered tick can be before a cycle prefers a fresh
  * REST fetch instead — covers a connection that's silently gone quiet. */
@@ -139,7 +140,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 async function main() {
-  log("[collector] starting — 1s engine cycle, regime refreshed every 5 minutes");
+  log(`[collector] starting — ${TICK_INTERVAL_MS}ms engine cycle, regime refreshed every 5 minutes`);
   await refreshRegime();
   tickInterval = setInterval(tick, TICK_INTERVAL_MS);
   regimeInterval = setInterval(refreshRegime, REGIME_REFRESH_MS);

@@ -6,7 +6,7 @@ import { buildStateView } from "@/lib/engine/stateView";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MIN_TICK_INTERVAL_MS = 400;
+const MIN_TICK_INTERVAL_MS = 250;
 
 /**
  * Runs one engine cycle (ingest BRTI, sync markets, model + trade) and
