@@ -1,17 +1,25 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { runEngineTick } from "@/lib/engine/tick";
+import { buildStateView } from "@/lib/engine/stateView";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MIN_TICK_INTERVAL_MS = 2000;
+const MIN_TICK_INTERVAL_MS = 1500;
 
 /**
- * Runs one engine cycle (ingest BRTI, sync markets, model + trade). Called
- * by the dashboard's client-side heartbeat while it's open, by the
+ * Runs one engine cycle (ingest BRTI, sync markets, model + trade) and
+ * returns the resulting dashboard state in the same response — the client
+ * heartbeat used to follow this with a separate GET /api/state, doubling
+ * its round-trip latency for no reason, since this route already has
+ * everything needed to build that view after the tick completes.
+ *
+ * Called by the dashboard's client-side heartbeat while it's open, by the
  * standalone collector worker, and as a fallback by Vercel Cron. Cheaply
- * throttled so several browser tabs firing at once don't hammer Kalshi.
+ * throttled so several browser tabs firing at once don't hammer Kalshi —
+ * a throttled response still returns fresh state, just without running
+ * another tick.
  */
 export async function POST() {
   try {
@@ -20,10 +28,12 @@ export async function POST() {
       select: { timestamp: true },
     });
     if (last && Date.now() - last.timestamp.getTime() < MIN_TICK_INTERVAL_MS) {
-      return NextResponse.json({ skipped: true, reason: "throttled" });
+      const state = await buildStateView();
+      return NextResponse.json({ skipped: true, reason: "throttled", state });
     }
 
     const result = await runEngineTick();
+    const state = await buildStateView();
     return NextResponse.json({
       skipped: false,
       now: result.now,
@@ -32,6 +42,7 @@ export async function POST() {
       volatility: result.volatility,
       openMarkets: result.openMarkets,
       tradesOpened: result.tradesOpened,
+      state,
     });
   } catch (err) {
     console.error("[api/tick] engine tick failed", err);

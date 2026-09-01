@@ -28,9 +28,15 @@ export interface EngineTickResult {
  *  2. backfill the volatility lookback window from Binance if real Kalshi
  *     history doesn't cover it yet (no-ops once it does — see backfill.ts)
  *  3. detect new/transitioned markets and settle any that just closed
- *  4. recompute rolling realized volatility
+ *  4. recompute rolling realized volatility (cached — see volatilityWindow.ts)
  *  5. for every open market: run the Monte Carlo model, persist a snapshot,
  *     and paper-enter a position if edge clears the configured threshold
+ *
+ * Steps 1-3 are mutually independent (BRTI ingestion, the Binance backfill
+ * check, and Kalshi market sync don't read each other's output) and run
+ * concurrently — on the stateless serverless path in particular, where
+ * every step is a real network round trip, this matters a lot for how long
+ * a single tick takes end to end.
  *
  * `opts.latestBrti` lets a caller with its own polling loop (the standalone
  * collector) skip the one-shot fetch; omitting it makes this safe to call
@@ -55,37 +61,21 @@ export async function runEngineTick(
   const now = new Date();
   const settings = await getSettings();
 
-  let brti: BrtiTick | null = null;
-  let brtiError: string | null = null;
-  try {
-    if (opts.latestBrti) {
-      brti = opts.latestBrti;
-      await ingestBrtiTick(brti);
-    } else {
-      // CF Benchmarks returns a trailing ~60s window per request, not just
-      // the latest point — bulk-ingest all of it so even an occasional
-      // self-fetch (dashboard heartbeat, cron) backfills a full minute of
-      // 1-second resolution instead of a single row.
-      const window = await fetchBrtiWindow();
-      await ingestBrtiTicks(window);
-      brti = window[window.length - 1]!;
-    }
-  } catch (err) {
-    brtiError = err instanceof Error ? err.message : "BRTI fetch failed";
-    console.error("[engine] BRTI ingestion failed", err);
-  }
+  const [brtiResult, openMarkets] = await Promise.all([
+    fetchAndIngestBrti(opts.latestBrti),
+    syncMarkets(now),
+    ensureVolatilityHistoryBackfilled(settings.lookbackMarkets * MARKET_DURATION_MS, now),
+  ]);
+  const { brti, brtiError } = brtiResult;
 
-  await ensureVolatilityHistoryBackfilled(settings.lookbackMarkets * MARKET_DURATION_MS, now);
-
-  const openMarkets = await syncMarkets(now);
   const volatility = await computeRollingVolatility(settings.lookbackMarkets, now);
 
-  const tradesOpened: string[] = [];
+  let tradesOpened: string[] = [];
   if (brti) {
-    for (const market of openMarkets) {
-      const opened = await processMarket(market, brti, volatility, settings, now, opts.regime);
-      if (opened) tradesOpened.push(market.id);
-    }
+    const opened = await Promise.all(
+      openMarkets.map((market) => processMarket(market, brti, volatility, settings, now, opts.regime)),
+    );
+    tradesOpened = openMarkets.filter((_, i) => opened[i]).map((m) => m.id);
   }
 
   return {
@@ -96,6 +86,30 @@ export async function runEngineTick(
     openMarkets: openMarkets.length,
     tradesOpened,
   };
+}
+
+async function fetchAndIngestBrti(
+  latestBrti?: BrtiTick,
+): Promise<{ brti: BrtiTick | null; brtiError: string | null }> {
+  try {
+    if (latestBrti) {
+      await ingestBrtiTick(latestBrti);
+      return { brti: latestBrti, brtiError: null };
+    }
+    // CF Benchmarks returns a trailing ~60s window per request, not just
+    // the latest point — bulk-ingest all of it so even an occasional
+    // self-fetch (dashboard heartbeat, cron) backfills a full minute of
+    // 1-second resolution instead of a single row.
+    const window = await fetchBrtiWindow();
+    await ingestBrtiTicks(window);
+    return { brti: window[window.length - 1]!, brtiError: null };
+  } catch (err) {
+    console.error("[engine] BRTI ingestion failed", err);
+    return {
+      brti: null,
+      brtiError: err instanceof Error ? err.message : "BRTI fetch failed",
+    };
+  }
 }
 
 async function processMarket(
@@ -114,24 +128,26 @@ async function processMarket(
   const brtiAgeMs = nowMs - brti.timestamp;
   const isStale = brtiAgeMs > MAX_BRTI_STALENESS_MS;
 
-  const asks = await getBestAsksForMarket(market.id);
   const window = settlementWindowFor(closeMs);
   const msUntilWindowStart = Math.max(0, window.windowStart - nowMs);
 
-  let observedWindowTicks: number[] = [];
-  if (nowMs >= window.windowStart) {
-    const rows = await prisma.brtiTick.findMany({
-      where: {
-        timestamp: {
-          gte: new Date(window.windowStart),
-          lt: new Date(Math.min(nowMs, window.windowEnd)),
-        },
-      },
-      orderBy: { timestamp: "asc" },
-      select: { value: true },
-    });
-    observedWindowTicks = rows.map((r) => r.value);
-  }
+  const [asks, observedWindowTicks] = await Promise.all([
+    getBestAsksForMarket(market.id),
+    nowMs >= window.windowStart
+      ? prisma.brtiTick
+          .findMany({
+            where: {
+              timestamp: {
+                gte: new Date(window.windowStart),
+                lt: new Date(Math.min(nowMs, window.windowEnd)),
+              },
+            },
+            orderBy: { timestamp: "asc" },
+            select: { value: true },
+          })
+          .then((rows) => rows.map((r) => r.value))
+      : Promise.resolve<number[]>([]),
+  ]);
 
   // A caller with a persistent process (the collector) supplies a
   // precomputed regime for a cheap re-pricing; otherwise run a fresh

@@ -9,7 +9,7 @@ const CLIENT_FETCH_TIMEOUT_MS = 12_000;
  * A hung request (dropped connection, a stalled proxy) would otherwise
  * block forever and stall SWR's refresh loop entirely — it only schedules
  * the next poll after the current fetcher call settles. Bounding every
- * request means a bad one fails fast and the next 5s cycle still fires.
+ * request means a bad one fails fast and the next cycle still fires.
  */
 async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   const controller = new AbortController();
@@ -42,8 +42,11 @@ interface HeartbeatResult {
 
 /**
  * Live dashboard state. `heartbeat: true` (the main dashboard screen) also
- * fires the engine tick before each read, which is what drives the 5-second
- * model cadence while the dashboard is open. Other screens just read.
+ * fires the engine tick before each read, which is what drives the model
+ * cadence while the dashboard is open — POST /api/tick returns the
+ * resulting state directly in the same response (see that route), so this
+ * is a single round trip per cycle rather than a tick call followed by a
+ * separate state read. Other screens just read.
  */
 export function useAppState(opts: { heartbeat?: boolean } = {}) {
   const key = opts.heartbeat ? "/api/state?heartbeat=1" : "/api/state";
@@ -51,19 +54,29 @@ export function useAppState(opts: { heartbeat?: boolean } = {}) {
   const { data, error, isLoading } = useSWR<HeartbeatResult>(
     key,
     async () => {
-      let tickError: string | null = null;
-      if (opts.heartbeat) {
-        try {
-          const res = await fetchWithTimeout("/api/tick", { method: "POST" });
-          const body = await res.json().catch(() => null);
-          if (!res.ok) tickError = body?.error ?? `tick failed (${res.status})`;
-          else if (body?.brtiError) tickError = body.brtiError;
-        } catch (e) {
-          tickError = e instanceof Error ? e.message : "tick request failed";
-        }
+      if (!opts.heartbeat) {
+        return { state: await fetchJson<AppStateDTO>("/api/state"), tickError: null };
       }
-      const state = await fetchJson<AppStateDTO>("/api/state");
-      return { state, tickError };
+
+      try {
+        const res = await fetchWithTimeout("/api/tick", { method: "POST" });
+        const body = await res.json().catch(() => null);
+
+        if (body?.state) {
+          const tickError = !res.ok ? (body.error ?? `tick failed (${res.status})`) : (body.brtiError ?? null);
+          return { state: body.state as AppStateDTO, tickError };
+        }
+
+        // Tick failed before it could build a state view (e.g. DB
+        // unreachable) — fall back to a plain read so the dashboard still
+        // shows whatever's there, with the tick failure surfaced.
+        const state = await fetchJson<AppStateDTO>("/api/state");
+        return { state, tickError: body?.error ?? `tick failed (${res.status})` };
+      } catch (e) {
+        const tickError = e instanceof Error ? e.message : "tick request failed";
+        const state = await fetchJson<AppStateDTO>("/api/state");
+        return { state, tickError };
+      }
     },
     {
       refreshInterval: 5000,

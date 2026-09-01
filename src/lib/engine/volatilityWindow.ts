@@ -12,6 +12,13 @@ export interface RollingVolatility extends VolatilityResult {
 
 export const MARKET_DURATION_MS = 15 * 60 * 1000;
 
+/** How long a cached volatility estimate is reused before recomputing from
+ * the full tick history. Volatility doesn't meaningfully change second to
+ * second, but recomputing it means scanning every BrtiTick in the lookback
+ * window (thousands of rows) — real, avoidable cost on a stateless
+ * serverless invocation that would otherwise pay for it on every tick. */
+const CACHE_TTL_MS = 30_000;
+
 /**
  * Recomputes realized volatility from 5-second-equivalent BRTI log returns
  * across the previous `lookbackMarkets * 15` minutes of persisted tick
@@ -21,11 +28,31 @@ export const MARKET_DURATION_MS = 15 * 60 * 1000;
  * warm-up immediately, rather than requiring `lookbackMarkets` real Kalshi
  * markets to have actually settled first, which could otherwise take hours
  * even with a full backfill sitting in the BrtiTick table unused.
+ *
+ * Cached in the DB (see the VolatilityCache model) for CACHE_TTL_MS so
+ * repeated calls a few seconds apart — the normal case on every code path
+ * in this app — reuse the same estimate instead of rescanning the full
+ * history each time.
  */
 export async function computeRollingVolatility(
   lookbackMarkets: number,
   now: Date = new Date(),
 ): Promise<RollingVolatility> {
+  const cached = await prisma.volatilityCache.findUnique({ where: { id: 1 } });
+  if (
+    cached &&
+    cached.lookbackMarkets === lookbackMarkets &&
+    now.getTime() - cached.computedAt.getTime() < CACHE_TTL_MS
+  ) {
+    return {
+      sigma5s: cached.sigma5s,
+      sampleSize: cached.sampleSize,
+      warmup: cached.warmup,
+      marketsUsed: cached.marketsUsed,
+      marketsRequired: cached.marketsRequired,
+    };
+  }
+
   const requiredMs = lookbackMarkets * MARKET_DURATION_MS;
   const windowStart = new Date(now.getTime() - requiredMs);
 
@@ -44,10 +71,23 @@ export async function computeRollingVolatility(
   // minutes of unavoidable startup lag don't keep it in warm-up forever.
   const coverageWarmup = coverageMs < requiredMs * 0.95;
 
-  return {
+  const rolling: RollingVolatility = {
     ...result,
     warmup: result.warmup || coverageWarmup,
     marketsUsed: Math.min(lookbackMarkets, coverageMs / MARKET_DURATION_MS),
     marketsRequired: lookbackMarkets,
   };
+
+  await prisma.volatilityCache
+    .upsert({
+      where: { id: 1 },
+      create: { id: 1, lookbackMarkets, ...rolling, computedAt: now },
+      update: { lookbackMarkets, ...rolling, computedAt: now },
+    })
+    .catch((err) => {
+      // Non-fatal — worst case the next call just recomputes again.
+      console.error("[volatility] failed to write cache", err);
+    });
+
+  return rolling;
 }

@@ -139,6 +139,30 @@ All paths call the exact same idempotent tick logic (`runEngineTick`), so there'
 double-counting: BRTI ingestion dedupes to one row per second, and trades are guarded by
 a unique constraint (max one entry per market).
 
+### Keeping the serverless/dashboard-only path itself fast
+
+Independent of which BRTI source is used, a single tick used to do more sequential,
+avoidable work than it needed to. This was tightened directly:
+
+- BRTI ingestion, Kalshi market sync, and the Binance-backfill check are mutually
+  independent and now run concurrently (`Promise.all`) instead of one after another.
+- Realized volatility is expensive to (re)compute — it scans every persisted BRTI tick in
+  the lookback window, thousands of rows once warmed up — so it's now cached in the DB
+  (`VolatilityCache`, `src/lib/engine/volatilityWindow.ts`) for 30 seconds instead of
+  recomputed on every single tick; volatility doesn't meaningfully change second to
+  second anyway.
+- Bulk BRTI ingestion (`ingestBrtiTicks`) writes the whole ~60-row window in one
+  `INSERT ... ON CONFLICT` statement instead of up to 60 separate round trips.
+- Best-ask lookup (`getBestAsksForMarket`) fetches the market object and the order book
+  concurrently instead of trying one and falling back to the other in sequence.
+- `POST /api/tick` now returns the resulting dashboard state directly in its own
+  response, so the client heartbeat is a single round trip per cycle instead of a tick
+  call followed by a separate `GET /api/state`.
+
+None of this makes the serverless path a substitute for the collector's genuine
+websocket push — it's still bounded by the 5-second poll interval and a real Kalshi
+round trip — but it meaningfully cuts how long each of those cycles actually takes.
+
 ## Getting started
 
 ### 1. Kalshi API credentials

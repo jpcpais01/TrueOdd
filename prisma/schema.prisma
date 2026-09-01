@@ -133,3 +133,20 @@ model Settings {
   paperStake      Float @default(10)
   updatedAt       DateTime @updatedAt
 }
+
+// Singleton row (id = 1) caching the last realized-volatility computation.
+// Recomputing it means scanning every BrtiTick in the lookback window
+// (thousands of rows) — real cost on a stateless serverless invocation that
+// pays for it fresh every tick. Volatility doesn't meaningfully change
+// second to second, so this is reused for a short TTL (see
+// engine/volatilityWindow.ts) instead of recomputed on every single tick.
+model VolatilityCache {
+  id              Int      @id @default(1)
+  lookbackMarkets Int // the setting this was computed for; recomputed if it changes
+  sigma5s         Float
+  sampleSize      Int
+  warmup          Boolean
+  marketsUsed     Float
+  marketsRequired Int
+  computedAt      DateTime
+}
