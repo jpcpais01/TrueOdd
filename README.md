@@ -229,6 +229,15 @@ zero extra work, because the Neon integration creates **both automatically**:
   acquire a postgres advisory lock`) — this is exactly why a second, direct connection
   is required, and the integration sets it up without you touching anything.
 
+Runtime queries going through the pooled `DATABASE_URL` have a related PgBouncer issue:
+right after a migration that changes a column's type, a connection can still be holding a
+query plan cached from before the change, failing with Postgres error 0A000 (`cached plan
+must not change result type`) until that specific connection gets recycled.
+`src/lib/db/prisma.ts` forces `pgbouncer=true` onto the connection at runtime — this
+makes Prisma skip server-side prepared statements over that connection, avoiding the
+whole class of failure automatically rather than needing you to edit the connection
+string by hand or wait it out after every schema change.
+
 ```bash
 # copy the example and fill in DATABASE_URL + DATABASE_URL_UNPOOLED + Kalshi credentials
 cp .env.example .env
