@@ -8,20 +8,20 @@
  * a small VPS, Railway/Fly/Render, a Raspberry Pi, tmux/pm2/systemd on your
  * own machine — pointed at the same DATABASE_URL as the Vercel deployment.
  *
- * It holds one persistent, auto-reconnecting websocket to Kalshi's CF
- * Benchmarks BRTI feed (which pushes ~once per second) and ingests every
- * tick as it arrives — that alone gives full 1-second resolution for the
- * settlement-window replication with no special-casing needed. Separately,
- * on a 5-second timer, it runs one full engine cycle (market sync, Monte
- * Carlo, snapshot persistence, paper-trade evaluation) off the latest
- * cached BRTI value.
+ * BRTI is polled once per second over Kalshi's CF Benchmarks REST
+ * passthrough (not a websocket — see src/lib/kalshi/brti.ts for why) and
+ * ingested as it arrives, giving full 1-second resolution for the
+ * settlement-window replication. Separately, on a 5-second timer, it runs
+ * one full engine cycle (market sync, Monte Carlo, snapshot persistence,
+ * paper-trade evaluation) off the latest cached BRTI value.
  */
 import "dotenv/config";
-import { openBrtiStream, type BrtiTick } from "../src/lib/kalshi/brti";
+import { startBrtiPolling, type BrtiTick } from "../src/lib/kalshi/brti";
 import { ingestBrtiTick } from "../src/lib/engine/brtiIngest";
 import { runEngineTick } from "../src/lib/engine/tick";
 
 const TICK_INTERVAL_MS = 5000;
+const BRTI_POLL_INTERVAL_MS = 1000;
 
 function log(...args: unknown[]) {
   console.log(new Date().toISOString(), ...args);
@@ -29,19 +29,26 @@ function log(...args: unknown[]) {
 
 let latest: BrtiTick | null = null;
 let ticksReceived = 0;
+let lastBrtiErrorLoggedAt = 0;
 
-log("[collector] starting — connecting to Kalshi BRTI feed");
+log("[collector] starting — polling Kalshi CF Benchmarks BRTI feed");
 
-const stream = openBrtiStream({
-  onTick: (t) => {
+const poller = startBrtiPolling(
+  (t) => {
     latest = t;
     ticksReceived++;
     ingestBrtiTick(t).catch((err) => log("[collector] failed to persist BRTI tick:", err));
   },
-  onOpen: () => log("[collector] BRTI websocket connected"),
-  onClose: () => log("[collector] BRTI websocket closed — will reconnect with backoff"),
-  onError: (err) => log("[collector] BRTI websocket error:", err.message),
-});
+  (err) => {
+    // BRTI polling errors are frequent-ish if misconfigured; throttle the log.
+    const now = Date.now();
+    if (now - lastBrtiErrorLoggedAt > 10_000) {
+      lastBrtiErrorLoggedAt = now;
+      log("[collector] BRTI poll error:", err.message);
+    }
+  },
+  BRTI_POLL_INTERVAL_MS,
+);
 
 let running = false;
 
@@ -75,7 +82,7 @@ const interval = setInterval(tick, TICK_INTERVAL_MS);
 function shutdown(signal: string) {
   log(`[collector] received ${signal}, shutting down`);
   clearInterval(interval);
-  stream.close();
+  poller.stop();
   process.exit(0);
 }
 

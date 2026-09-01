@@ -4,9 +4,9 @@ import type { Tick, VolatilityResult } from "./types";
 export const TARGET_STEP_MS = 5000;
 
 /**
- * Log returns spanning more than this are treated as a data outage (websocket
- * drop, market-hours gap, etc.) and excluded so a stale reconnect doesn't
- * masquerade as a single giant realized move.
+ * Log returns spanning more than this are treated as a data outage (a
+ * polling gap, an API error stretch, etc.) and excluded so a stale
+ * reconnect doesn't masquerade as a single giant realized move.
  */
 export const MAX_GAP_MS = 20_000;
 

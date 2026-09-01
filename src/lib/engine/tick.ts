@@ -29,15 +29,15 @@ export interface EngineTickResult {
  *  4. for every open market: run the Monte Carlo model, persist a snapshot,
  *     and paper-enter a position if edge clears the configured threshold
  *
- * `opts.latestBrti` lets a caller with its own live feed (the standalone
- * collector, which holds a persistent websocket) skip the one-shot fetch;
- * omitting it makes this safe to call from a stateless API route too.
+ * `opts.latestBrti` lets a caller with its own polling loop (the standalone
+ * collector) skip the one-shot fetch; omitting it makes this safe to call
+ * from a stateless API route too.
  *
  * Market sync/settlement (Kalshi REST, unauthenticated) and BRTI ingestion
- * (Kalshi websocket, authenticated) are independent Kalshi integrations —
- * a BRTI outage or misconfiguration must never prevent market detection
- * from running, so failures there are caught locally rather than aborting
- * the whole tick.
+ * (the CF Benchmarks REST passthrough, authenticated) are independent
+ * Kalshi integrations — a BRTI outage or misconfiguration must never
+ * prevent market detection from running, so failures there are caught
+ * locally rather than aborting the whole tick.
  */
 export async function runEngineTick(opts: { latestBrti?: BrtiTick } = {}): Promise<EngineTickResult> {
   const now = new Date();

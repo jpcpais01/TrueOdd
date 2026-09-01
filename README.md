@@ -23,11 +23,13 @@ good before reading anything into the P&L.
    up automatically; a market Kalshi stops listing as open is settled — using Kalshi's
    own reported result when available, cross-checked against our own recomputation from
    persisted BRTI ticks.
-2. **BRTI collection** — a persistent websocket subscription to Kalshi's CF Benchmarks
-   BRTI value feed (which pushes ~once/second) is ingested continuously and persisted,
-   deduplicated to one row per second (`src/lib/engine/brtiIngest.ts`). This is what
-   makes the volatility rolling window and the settlement-window replication both work
-   without any special-cased sampling-rate switching.
+2. **BRTI collection** — the current BRTI value is read via Kalshi's CF Benchmarks REST
+   passthrough (`GET /cfbenchmarks/values?id=BRTI`, signed the same way as every other
+   Kalshi request) and persisted, deduplicated to one row per second
+   (`src/lib/engine/brtiIngest.ts`). This runs on a 1-second poll from the standalone
+   collector, and once per tick from the dashboard's heartbeat / cron. Using REST rather
+   than a websocket here is deliberate — see "Why there's a separate collector process"
+   below.
 3. **Volatility** — every tick, realized vol is re-estimated as the standard deviation
    of 5-second-equivalent log returns across the previous *N* (default 10) **completed**
    markets, using the full persisted BRTI history spanning them
@@ -52,14 +54,20 @@ good before reading anything into the P&L.
 
 ## Why there's a separate collector process
 
-Vercel serverless functions can't hold a persistent websocket or run an unattended loop
-24/7 at 5-second cadence. So there are two ways data gets collected, and you'll likely
-want both:
+BRTI is read over plain signed REST (`GET /cfbenchmarks/values?id=BRTI`), not a
+websocket — an earlier version of this app used Kalshi's CF Benchmarks websocket feed,
+but Vercel serverless functions don't reliably support outbound websocket upgrades
+(connections there could sit open with no `open`/`error`/`close` event ever firing), so
+it was switched to REST, reusing the exact signed-request path that market/orderbook
+reads already use successfully. That fixes *reachability*, but Vercel serverless
+functions still can't run an unattended loop 24/7 at 5-second cadence — a function only
+runs for the duration of a request. So there are still three ways data gets collected,
+and you'll likely want more than one:
 
-- **`npm run collector`** — a standalone Node process (`scripts/collector.ts`) that holds
-  the persistent BRTI websocket and runs the 5-second engine loop continuously,
-  independent of anyone viewing the dashboard. Run this anywhere that stays on: a small
-  VPS, Railway/Fly/Render, a Raspberry Pi, `pm2`/`systemd`/`tmux` on your own machine —
+- **`npm run collector`** — a standalone Node process (`scripts/collector.ts`) that polls
+  BRTI once a second and runs the 5-second engine loop continuously, independent of
+  anyone viewing the dashboard. Run this anywhere that stays on: a small VPS,
+  Railway/Fly/Render, a Raspberry Pi, `pm2`/`systemd`/`tmux` on your own machine —
   pointed at the **same** `DATABASE_URL` as your Vercel deployment. This is what actually
   builds and maintains the rolling BRTI history needed to exit warm-up mode.
 - **The dashboard itself** also drives the engine: while the main screen (`/`) is open in
@@ -93,8 +101,11 @@ a unique constraint (max one entry per market).
    immediately (it also downloads as a `.txt` file) since Kalshi doesn't store or
    re-display the private key.
 2. Market and order-book REST reads are public and don't strictly need credentials, but
-   the CF Benchmarks BRTI websocket requires a signed handshake even for public index
-   data — so credentials are required to run this app for real.
+   the CF Benchmarks BRTI REST passthrough (`/cfbenchmarks/values`) requires a signed
+   request even for public index data — so credentials are required to run this app for
+   real. That passthrough also requires the requesting account to have the CF Benchmarks
+   entitlement enabled; if you get a 403 specifically on that endpoint after everything
+   else works, that's likely it — check with Kalshi support/account settings.
 3. Set:
    - `KALSHI_API_KEY_ID` — the key ID from step 1.
    - `KALSHI_PRIVATE_KEY` — the PEM contents. Easiest as one line with literal `\n` for
@@ -103,13 +114,13 @@ a unique constraint (max one entry per market).
 
 > **A note on API schema assumptions:** this build environment could not reach
 > `docs.kalshi.com` / `docs.cfbenchmarks.com` to verify exact field names byte-for-byte
-> (egress was blocked), so the REST/WebSocket integration (`src/lib/kalshi/`) was built
-> from Kalshi's publicly documented conventions (RSA-PSS request signing, the
-> `/markets`/`/orderbook` REST shape, the `cfbenchmarks_value` channel) with defensive,
-> multi-field-name parsing on the BRTI message (`parseBrtiMessage` in
+> (egress was blocked), so the REST integration (`src/lib/kalshi/`) was built from
+> Kalshi's publicly documented conventions (RSA-PSS request signing, the
+> `/markets`/`/orderbook`/`/cfbenchmarks/values` REST shapes) with defensive,
+> multi-field-name parsing on the BRTI response (`parseCfBenchmarksValue` in
 > `src/lib/kalshi/brti.ts`). If Kalshi's live payload differs from the field names tried
-> there, the code logs a one-time console warning with the raw message — adjust the
-> candidate field list in that function to match.
+> there, the "BRTI FEED ERROR" banner on the dashboard shows the actual response it
+> received — adjust the candidate field list in that function to match.
 
 ### 2. Database
 
@@ -173,7 +184,6 @@ npm run typecheck
 | `KALSHI_PRIVATE_KEY` | yes* | PEM private key, `\n`-escaped on one line. |
 | `KALSHI_PRIVATE_KEY_BASE64` | yes* | Alternative to the above — base64 of the PEM file. |
 | `KALSHI_API_BASE` | no | Default `https://api.elections.kalshi.com/trade-api/v2`. |
-| `KALSHI_WS_URL` | no | Default `wss://api.elections.kalshi.com/trade-api/ws/v2`. |
 | `KALSHI_BTC_SERIES_TICKER` | no | Default `KXBTC15M`. |
 | `CRON_SECRET` | no | If set, required as a Bearer token on `/api/cron/tick`. |
 
@@ -186,7 +196,7 @@ src/
   lib/
     quant/       pure, unit-tested math: volatility, Monte Carlo, settlement
                  averaging, edge, paper P&L/calibration — no I/O, no DB
-    kalshi/      REST client, RSA-PSS request signing, BRTI websocket client
+    kalshi/      REST client, RSA-PSS request signing, BRTI (CF Benchmarks) reader
     engine/      orchestration: market tracking/settlement, volatility window,
                  the 5s tick pipeline, settings
     db/          Prisma client singleton

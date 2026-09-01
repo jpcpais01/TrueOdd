@@ -26,7 +26,10 @@ class KalshiApiError extends Error {
   }
 }
 
-async function kalshiFetch<T>(
+/** Signed (when credentials are configured) GET against the Kalshi Trade
+ * API. Exported so other Kalshi integrations (e.g. the CF Benchmarks REST
+ * passthrough) reuse the same base URL, signing, and error handling. */
+export async function kalshiFetch<T>(
   path: string,
   query?: Record<string, string | number | undefined>,
 ): Promise<T> {

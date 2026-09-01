@@ -1,9 +1,4 @@
-import WebSocket from "ws";
-import { loadKalshiCredentials, signKalshiRequest } from "./auth";
-
-export const KALSHI_WS_URL = process.env.KALSHI_WS_URL ?? "wss://api.elections.kalshi.com/trade-api/ws/v2";
-
-const WS_PATH = "/trade-api/ws/v2";
+import { kalshiFetch } from "./client";
 
 export interface BrtiTick {
   timestamp: number; // epoch ms
@@ -11,217 +6,143 @@ export interface BrtiTick {
 }
 
 /**
- * The exact CF Benchmarks websocket envelope isn't verifiable from this
- * build environment (docs.kalshi.com / docs.cfbenchmarks.com are not
- * reachable here), so this parses defensively across the field-name
- * variants Kalshi's docs and third-party integration guides describe,
- * preferring the raw instantaneous index value over any pre-averaged one —
- * the settlement-window simulation needs genuine per-second observations,
- * not a smoothed value. If Kalshi's live schema differs, adjust the
- * candidate paths below; a startup warning fires once if nothing matches.
+ * BRTI is read via Kalshi's CF Benchmarks REST passthrough
+ * (`GET /cfbenchmarks/values?id=BRTI`, forwarded straight to CF Benchmarks
+ * and returned wrapped as `{ data: { serverTime, payload } }`), not their
+ * websocket feed. Vercel serverless functions don't reliably support
+ * outbound websocket upgrades — connections there silently never opened —
+ * while this reuses the exact signed-REST path that market/orderbook reads
+ * already use successfully, so it works the same in a short-lived
+ * serverless invocation and in the long-running collector worker alike.
+ *
+ * The requesting Kalshi account needs the CF Benchmarks passthrough
+ * entitlement enabled; without it this 403s (surfaced as-is so that's
+ * visible rather than swallowed).
+ *
+ * CF Benchmarks' exact `payload` field names aren't verifiable from this
+ * build environment (docs.cfbenchmarks.com was unreachable here), so
+ * parsing is defensive across the field-name variants their docs and the
+ * websocket schema use — adjust the candidate lists below if the live
+ * response differs.
  */
-export function parseBrtiMessage(raw: unknown): BrtiTick | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const obj = raw as Record<string, unknown>;
+interface CfBenchmarksResponse {
+  data?: {
+    serverTime?: string;
+    payload?: unknown;
+  };
+}
 
-  const type = obj.type;
-  if (type !== undefined && typeof type === "string" && !/cfbenchmarks|brti|value/i.test(type)) {
-    return null;
-  }
+export function parseCfBenchmarksValue(resp: CfBenchmarksResponse, indexId = "BRTI"): BrtiTick | null {
+  const payload = resp.data?.payload;
+  if (payload === undefined || payload === null) return null;
 
-  const msg = (obj.msg ?? obj.data ?? obj) as Record<string, unknown>;
+  const candidates: Record<string, unknown>[] = Array.isArray(payload)
+    ? (payload as unknown[]).filter(
+        (p): p is Record<string, unknown> => typeof p === "object" && p !== null,
+      )
+    : typeof payload === "object"
+      ? [payload as Record<string, unknown>]
+      : [];
 
-  if (msg.index_id !== undefined && msg.index_id !== "BRTI") return null;
+  const entry =
+    candidates.find((c) => c.index_id === indexId || c.indexId === indexId || c.id === indexId) ??
+    candidates[0];
+  if (!entry) return null;
 
   const valueCandidates = [
-    msg.value,
-    msg.price,
-    msg.index_value,
-    (msg.avg_60s_data as Record<string, unknown> | undefined)?.value,
+    entry.value,
+    entry.price,
+    entry.index_value,
+    entry.indexValue,
+    entry.last,
+    (entry.avg_60s_data as Record<string, unknown> | undefined)?.value,
   ];
   const value = valueCandidates.find((v): v is number => typeof v === "number" && v > 0);
   if (value === undefined) return null;
 
-  const tsCandidates = [msg.timestamp_ms, msg.timestamp, msg.ts, msg.time];
-  let timestamp = tsCandidates.find((v): v is number => typeof v === "number");
-  if (timestamp === undefined && typeof msg.timestamp === "string") {
-    const parsed = Date.parse(msg.timestamp);
-    if (!Number.isNaN(parsed)) timestamp = parsed;
+  const tsCandidates: unknown[] = [
+    entry.timestamp_ms,
+    entry.timestampMs,
+    entry.ts,
+    entry.time,
+    entry.timestamp,
+    resp.data?.serverTime,
+  ];
+  let timestamp: number | undefined;
+  for (const c of tsCandidates) {
+    if (typeof c === "number") {
+      timestamp = c;
+      break;
+    }
+    if (typeof c === "string") {
+      const parsed = Date.parse(c);
+      if (!Number.isNaN(parsed)) {
+        timestamp = parsed;
+        break;
+      }
+    }
   }
-  // Heuristic: values below ~1e12 are almost certainly seconds, not ms.
-  if (timestamp !== undefined && timestamp < 1e12) timestamp *= 1000;
+  if (timestamp !== undefined && timestamp < 1e12) timestamp *= 1000; // seconds -> ms
   if (timestamp === undefined) timestamp = Date.now();
 
   return { timestamp, value };
 }
 
-export interface BrtiStreamHandle {
-  close: () => void;
-}
+let warnedUnparsed = false;
 
-export interface BrtiStreamOptions {
-  onTick: (tick: BrtiTick) => void;
-  onError?: (err: Error) => void;
-  onOpen?: () => void;
-  onClose?: (info: { code: number; reason: string }) => void;
-  /** Fires for every websocket text frame received, parsed or not — used
-   * for diagnostics (fetchBrtiOnce surfaces this in its timeout error). */
-  onRawMessage?: (raw: string) => void;
-}
-
-/**
- * Opens a persistent, auto-resubscribing connection to Kalshi's CF
- * Benchmarks value feed for BRTI. Intended for the long-running collector
- * worker (not for use inside a short-lived serverless function).
- */
-export function openBrtiStream(opts: BrtiStreamOptions): BrtiStreamHandle {
-  const creds = loadKalshiCredentials();
-  if (!creds) {
+/** Fetches the current BRTI value. Safe to call from a short-lived
+ * serverless request or on a polling interval from a long-running process. */
+export async function fetchBrtiOnce(): Promise<BrtiTick> {
+  const resp = await kalshiFetch<CfBenchmarksResponse>("/cfbenchmarks/values", { id: "BRTI" });
+  const tick = parseCfBenchmarksValue(resp);
+  if (!tick) {
+    if (!warnedUnparsed) {
+      warnedUnparsed = true;
+      console.warn(
+        "[brti] CF Benchmarks response did not match any known payload shape. Raw response (first 500 chars):",
+        JSON.stringify(resp).slice(0, 500),
+      );
+    }
     throw new Error(
-      "KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY must be set — the CF Benchmarks websocket requires an authenticated handshake even for public index data.",
+      `CF Benchmarks response for BRTI didn't parse — raw: ${JSON.stringify(resp).slice(0, 300)}`,
     );
   }
+  return tick;
+}
 
-  let closedByCaller = false;
-  let ws: WebSocket | null = null;
-  let reconnectDelayMs = 1000;
-  let warnedUnparsed = false;
-
-  const connect = () => {
-    const headers = signKalshiRequest({
-      method: "GET",
-      path: WS_PATH,
-      apiKeyId: creds.apiKeyId,
-      privateKeyPem: creds.privateKeyPem,
-    });
-
-    ws = new WebSocket(KALSHI_WS_URL, { headers });
-
-    // Fires when the HTTP upgrade itself is rejected (e.g. 401/403 from a
-    // bad signature or key ID) — without this listener that failure just
-    // looks like a generic connection error with no status code attached.
-    ws.on("unexpected-response", (_req, res) => {
-      let body = "";
-      res.on("data", (chunk: Buffer) => {
-        body += chunk.toString();
-      });
-      res.on("end", () => {
-        opts.onError?.(
-          new Error(
-            `Kalshi websocket handshake rejected: HTTP ${res.statusCode} ${res.statusMessage ?? ""} ${body.slice(0, 300)}`.trim(),
-          ),
-        );
-      });
-    });
-
-    ws.on("open", () => {
-      reconnectDelayMs = 1000;
-      ws?.send(
-        JSON.stringify({
-          id: 1,
-          cmd: "subscribe",
-          params: { channels: ["cfbenchmarks_value"], index_ids: ["BRTI"] },
-        }),
-      );
-      opts.onOpen?.();
-    });
-
-    ws.on("message", (data) => {
-      const raw = data.toString();
-      opts.onRawMessage?.(raw);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        return;
-      }
-      const tick = parseBrtiMessage(parsed);
-      if (tick) {
-        opts.onTick(tick);
-      } else if (!warnedUnparsed) {
-        warnedUnparsed = true;
-        console.warn(
-          "[brti] received a websocket message that did not match any known BRTI schema; ignoring. First 300 chars:",
-          raw.slice(0, 300),
-        );
-      }
-    });
-
-    ws.on("error", (err) => opts.onError?.(err));
-
-    ws.on("close", (code, reasonBuf) => {
-      opts.onClose?.({ code, reason: reasonBuf.toString() });
-      if (closedByCaller) return;
-      setTimeout(connect, reconnectDelayMs);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30_000);
-    });
-  };
-
-  connect();
-
-  return {
-    close: () => {
-      closedByCaller = true;
-      ws?.close();
-    },
-  };
+export interface BrtiPollHandle {
+  stop: () => void;
 }
 
 /**
- * One-shot BRTI read: connects, waits for the first valid tick, disconnects.
- * Suitable for a short-lived serverless invocation (e.g. the Vercel
- * `/api/tick` route) that can't hold a persistent socket open. On timeout,
- * the rejection carries connection diagnostics (did the handshake open at
- * all, how many raw frames arrived, a sample of the last one) so a schema
- * mismatch or auth failure is visible without needing server log access.
+ * Polls BRTI on a fixed interval — used by the standalone collector worker
+ * to approximate the ~1/s CF Benchmarks update cadence via REST, since
+ * there's no persistent push feed being used here anymore.
  */
-export function fetchBrtiOnce(timeoutMs = 8000): Promise<BrtiTick> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let opened = false;
-    let closedInfo: { code: number; reason: string } | null = null;
-    let rawCount = 0;
-    let lastRaw: string | null = null;
+export function startBrtiPolling(
+  onTick: (tick: BrtiTick) => void,
+  onError: (err: Error) => void,
+  intervalMs = 1000,
+): BrtiPollHandle {
+  let stopped = false;
 
-    const handle = openBrtiStream({
-      onOpen: () => {
-        opened = true;
-      },
-      onRawMessage: (raw) => {
-        rawCount++;
-        lastRaw = raw;
-      },
-      onTick: (tick) => {
-        if (settled) return;
-        settled = true;
-        resolve(tick);
-        handle.close();
-      },
-      onError: (err) => {
-        if (settled) return;
-        settled = true;
-        reject(err);
-        handle.close();
-      },
-      onClose: (info) => {
-        closedInfo = info;
-      },
-    });
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const tick = await fetchBrtiOnce();
+      onTick(tick);
+    } catch (err) {
+      onError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      if (!stopped) setTimeout(poll, intervalMs);
+    }
+  };
 
-    setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      handle.close();
+  poll();
 
-      const diag = !opened
-        ? closedInfo
-          ? `socket never opened (closed code=${closedInfo.code} reason="${closedInfo.reason}")`
-          : "socket never opened (no open/close/error event fired — check KALSHI_WS_URL / network egress)"
-        : rawCount === 0
-          ? "socket opened and subscribed, but zero messages were received"
-          : `socket opened, received ${rawCount} message(s), none parsed as a BRTI tick — last message: ${lastRaw?.slice(0, 300)}`;
-
-      reject(new Error(`Timed out waiting for a BRTI tick from Kalshi's websocket — ${diag}`));
-    }, timeoutMs);
-  });
+  return {
+    stop: () => {
+      stopped = true;
+    },
+  };
 }

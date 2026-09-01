@@ -8,11 +8,11 @@ export interface KalshiAuthHeaders {
 }
 
 /**
- * Kalshi signs every authenticated request (REST and the WS handshake) with
- * RSA-PSS over `timestamp_ms + METHOD + path` (path includes the
- * `/trade-api/v2` or `/trade-api/ws/v2` prefix, excludes the query string).
- * Market/orderbook reads don't strictly require auth, but sending it raises
- * the account's rate-limit tier and is required for the BRTI websocket.
+ * Kalshi signs every authenticated REST request with RSA-PSS over
+ * `timestamp_ms + METHOD + path` (path includes the `/trade-api/v2` prefix,
+ * excludes the query string). Market/orderbook reads don't strictly require
+ * auth, but sending it raises the account's rate-limit tier and is required
+ * for the CF Benchmarks (BRTI) passthrough.
  */
 export function signKalshiRequest(params: {
   method: string;
@@ -42,7 +42,8 @@ export interface KalshiCredentials {
 }
 
 /** Reads credentials from env. Returns null if unset — REST market data
- * reads work fine without them; only the BRTI websocket strictly needs them. */
+ * reads work fine without them; only the BRTI (CF Benchmarks) passthrough
+ * strictly needs them. */
 export function loadKalshiCredentials(): KalshiCredentials | null {
   const apiKeyId = process.env.KALSHI_API_KEY_ID;
   let privateKeyPem = process.env.KALSHI_PRIVATE_KEY;

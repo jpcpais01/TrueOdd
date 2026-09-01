@@ -14,10 +14,11 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 interface HeartbeatResult {
   state: AppStateDTO;
-  /** Non-fatal: the engine tick's own error (e.g. the BRTI websocket
-   * rejecting auth), surfaced separately from state-fetch failures so the
-   * dashboard can show a specific reason instead of a generic "can't
-   * reach the engine" message. Market sync still runs even when this is set. */
+  /** Non-fatal: the engine tick's own error (e.g. the CF Benchmarks
+   * passthrough rejecting auth), surfaced separately from state-fetch
+   * failures so the dashboard can show a specific reason instead of a
+   * generic "can't reach the engine" message. Market sync still runs even
+   * when this is set. */
   tickError: string | null;
 }
 
