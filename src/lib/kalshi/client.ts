@@ -61,7 +61,10 @@ export async function kalshiFetch<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
   try {
-    const res = await fetch(url.toString(), { headers, signal: controller.signal });
+    // Explicit no-store rather than relying on Next.js's default fetch
+    // caching behavior — belt-and-suspenders so a live-data request can
+    // never silently be served from a cache layer at any level.
+    const res = await fetch(url.toString(), { headers, signal: controller.signal, cache: "no-store" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new KalshiApiError(`Kalshi API ${res.status} on ${path}: ${body.slice(0, 300)}`, res.status);

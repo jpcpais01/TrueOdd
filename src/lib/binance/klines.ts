@@ -59,7 +59,7 @@ export async function fetchBinanceHistory(minutes: number): Promise<BackfillTick
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const res = await fetch(url.toString(), { signal: controller.signal });
+    const res = await fetch(url.toString(), { signal: controller.signal, cache: "no-store" });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.error(`[binance] klines request failed: HTTP ${res.status} ${body.slice(0, 300)}`);
