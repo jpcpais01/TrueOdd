@@ -1,0 +1,125 @@
+// TrueOdd — Kalshi BTC 15m paper-trading research schema.
+// Postgres is required (serverless-safe, supports concurrent writers from
+// the Vercel app and the standalone collector worker).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// One row per Kalshi KXBTC15M market instance (e.g. KXBTC15M-26APR100545-45).
+model Market {
+  id             String    @id // ticker, e.g. "KXBTC15M-26APR100545-45"
+  seriesTicker   String
+  eventTicker    String
+  floorStrike    Float // "Price To Beat" — the reference strike for this window
+  openTime       DateTime
+  closeTime      DateTime // expiration — settlement window is [closeTime-60s, closeTime)
+  status         MarketStatus @default(OPEN)
+  settlementAvg  Float? // realized average of the 60 one-second BRTI observations
+  settlementSide Side?
+  settledAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  snapshots ModelSnapshot[]
+  trades    Trade[]
+
+  @@index([status])
+  @@index([closeTime])
+}
+
+enum MarketStatus {
+  OPEN
+  CLOSED // trading window over, settlement pending (in the last-minute observation phase or awaiting result)
+  SETTLED
+}
+
+enum Side {
+  YES
+  NO
+}
+
+// Raw BRTI observations. Sampled every 5s in normal operation, and at 1Hz
+// during the final 60s of any open market's settlement window so the exact
+// 60-observation settlement average can be reproduced.
+model BrtiTick {
+  id        BigInt   @id @default(autoincrement())
+  timestamp DateTime @unique
+  value     Float
+  source    TickSource @default(WS)
+
+  @@index([timestamp])
+}
+
+enum TickSource {
+  WS // live CF Benchmarks websocket push
+  BACKFILL // gap-fill / reconciliation
+}
+
+// Persisted every ~5s for EVERY tracked market, independent of whether a
+// trade was made. This is the primary research dataset.
+model ModelSnapshot {
+  id              BigInt   @id @default(autoincrement())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  timestamp       DateTime
+  brti            Float
+  strike          Float
+  timeRemainingMs Int
+  yesAsk          Int // cents, 1-99
+  noAsk           Int // cents, 1-99
+  modelYes        Float // probability 0-1
+  modelNo         Float
+  edgeYes         Float
+  edgeNo          Float
+  volatility      Float // sigma per 5s step used for this simulation
+  simPaths        Int
+  warmup          Boolean @default(false)
+  observedSecs    Int     @default(0) // # of the 60 settlement obs already fixed at this tick
+
+  @@index([marketId, timestamp])
+  @@index([timestamp])
+}
+
+// A single paper trade. Max one entry per market by construction.
+model Trade {
+  id             String    @id @default(cuid())
+  marketId       String
+  market         Market    @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  side           Side
+  entryPriceCts  Int // best ask paid, in cents
+  stake          Float // dollars risked
+  contracts      Int
+  modelProb      Float // model probability of the traded side at entry
+  edge           Float // edge at entry
+  entryTime      DateTime  @default(now())
+  status         TradeStatus @default(OPEN)
+  settlementSide Side?
+  pnl            Float? // dollars, null until settled
+  settledAt      DateTime?
+
+  @@unique([marketId]) // enforce "max one entry per market"
+  @@index([status])
+}
+
+enum TradeStatus {
+  OPEN
+  WON
+  LOST
+  VOID
+}
+
+// Singleton row (id = 1) holding user-configurable strategy parameters.
+model Settings {
+  id             Int   @id @default(1)
+  lookbackMarkets Int  @default(10)
+  mcPaths         Int  @default(10000)
+  minEdge         Float @default(0.02)
+  paperStake      Float @default(10)
+  updatedAt       DateTime @updatedAt
+}

@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0a0b14;
+  color: #e8e9f5;
+}
+
+body {
+  min-height: 100dvh;
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(61, 242, 255, 0.08), transparent 40%),
+    radial-gradient(circle at 85% 15%, rgba(0, 255, 163, 0.06), transparent 45%),
+    linear-gradient(#0a0b14, #0a0b14);
+}
+
+/* subtle scanline texture for the arcade feel — kept very low-opacity so it
+   never fights with legibility */
+.scanlines {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.018) 0px,
+    rgba(255, 255, 255, 0.018) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: overlay;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2d45;
+  border-radius: 999px;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.animate-marquee {
+  animation: marquee 22s linear infinite;
+}
