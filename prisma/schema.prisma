@@ -7,8 +7,14 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // `migrate deploy` uses session-level advisory locks to serialize
+  // migrations, which break over a pooled/PgBouncer connection (Neon's
+  // default DATABASE_URL) — Prisma's fix is a separate direct connection
+  // used only for migrations, while `url` above (pooled, serverless-safe)
+  // still handles all normal query-time traffic.
+  directUrl = env("DIRECT_URL")
 }
 
 // One row per Kalshi KXBTC15M market instance (e.g. KXBTC15M-26APR100545-45).

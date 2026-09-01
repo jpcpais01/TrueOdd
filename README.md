@@ -117,7 +117,7 @@ a unique constraint (max one entry per market).
 > (egress was blocked), so the REST integration (`src/lib/kalshi/`) was built from
 > Kalshi's publicly documented conventions (RSA-PSS request signing, the
 > `/markets`/`/orderbook`/`/cfbenchmarks/values` REST shapes) with defensive,
-> multi-field-name parsing on the BRTI response (`parseCfBenchmarksValue` in
+> multi-field-name parsing on the BRTI response (`parseCfBenchmarksValues` in
 > `src/lib/kalshi/brti.ts`). If Kalshi's live payload differs from the field names tried
 > there, the "BRTI FEED ERROR" banner on the dashboard shows the actual response it
 > received — adjust the candidate field list in that function to match.
@@ -130,12 +130,24 @@ connection string, and both offer a one-click "Add Integration" from inside a Ve
 project.
 
 The schema migration is already committed (`prisma/migrations/`), and `npm run build`
-applies it automatically (`prisma migrate deploy`) — so once `DATABASE_URL` points at an
-empty Postgres database, everything else — tables, indexes, the singleton settings row —
-sets itself up on first build/deploy. There's no manual migration step to run.
+applies it automatically (`prisma migrate deploy`) — so once the env vars below point at
+an empty Postgres database, everything else — tables, indexes, the singleton settings
+row — sets itself up on first build/deploy. There's no manual migration step to run.
+
+You need **two** connection-string env vars, not one:
+
+- `DATABASE_URL` — the **pooled** connection string, used by the app at runtime
+  (serverless-safe: many short-lived connections).
+- `DIRECT_URL` — the **unpooled/direct** connection string, used only by
+  `prisma migrate deploy` during the build. Migrations use a session-level advisory lock
+  that a pooled/PgBouncer connection breaks (fails with `P1002: timed out trying to
+  acquire a postgres advisory lock`), which is exactly the error you'll hit if this is
+  missing or also pointed at the pooled URL. Both Neon and Vercel Postgres surface an
+  unpooled variant alongside the pooled one (Storage tab → the database → connection
+  strings; Neon's integration often names it `DATABASE_URL_UNPOOLED`).
 
 ```bash
-# copy the example and fill in DATABASE_URL + Kalshi credentials
+# copy the example and fill in DATABASE_URL + DIRECT_URL + Kalshi credentials
 cp .env.example .env
 ```
 
@@ -164,14 +176,19 @@ npm run typecheck
 1. Push this repo to GitHub and import it in Vercel.
 2. Add a Postgres database — easiest via Vercel's Storage tab ("Add Integration" →
    Neon or Vercel Postgres), which sets `DATABASE_URL` for you automatically.
-3. Set the remaining environment variables (Settings → Environment Variables):
+3. Add `DIRECT_URL` yourself — the integration does **not** set this one. Find the
+   unpooled/direct connection string (Storage tab → the database → connection strings,
+   or the Neon console) and add it as a new env var named `DIRECT_URL`. Skipping this
+   makes the build fail with `P1002: timed out trying to acquire a postgres advisory
+   lock` during `prisma migrate deploy`.
+4. Set the remaining environment variables (Settings → Environment Variables):
    `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (or `KALSHI_PRIVATE_KEY_BASE64`), and
    optionally `CRON_SECRET`.
-4. Deploy. The build applies the database schema automatically (see above) — no manual
+5. Deploy. The build applies the database schema automatically (see above) — no manual
    migration step, no `vercel.json` required, so this works on the Hobby plan out of the
    box. (Optional, Pro plan only: add a `vercel.json` with a per-minute cron for
    `/api/cron/tick` as a safety net — see above.)
-5. **Run the collector somewhere that stays on**, pointed at the same `DATABASE_URL` —
+6. **Run the collector somewhere that stays on**, pointed at the same `DATABASE_URL` —
    this is the piece Vercel itself cannot host. A $5-6/month VPS or a free-tier
    Railway/Fly worker is enough; it only needs Node and outbound network access.
 
@@ -179,7 +196,8 @@ npm run typecheck
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | yes | Postgres connection string (pooled, for serverless). |
+| `DATABASE_URL` | yes | Postgres connection string — **pooled**, used at runtime. |
+| `DIRECT_URL` | yes | Postgres connection string — **unpooled/direct**, used only by `prisma migrate deploy` during the build. |
 | `KALSHI_API_KEY_ID` | yes | Kalshi API key ID. |
 | `KALSHI_PRIVATE_KEY` | yes* | PEM private key, `\n`-escaped on one line. |
 | `KALSHI_PRIVATE_KEY_BASE64` | yes* | Alternative to the above — base64 of the PEM file. |
