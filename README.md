@@ -86,8 +86,12 @@ a unique constraint (max one entry per market).
 
 ### 1. Kalshi API credentials
 
-1. Create a Kalshi account and, under **Settings → API Keys**, generate an API key pair.
-   Kalshi gives you a key ID and downloads an RSA private key (PEM).
+1. Create a Kalshi account, complete identity verification if prompted (some accounts
+   need this before the API Keys section appears, even for read-only use), then go to
+   **kalshi.com/account/profile → API Keys** and click **Create New API Key**. Kalshi
+   shows you a **Key ID** and an **RSA private key** (PEM) exactly once — copy both
+   immediately (it also downloads as a `.txt` file) since Kalshi doesn't store or
+   re-display the private key.
 2. Market and order-book REST reads are public and don't strictly need credentials, but
    the CF Benchmarks BRTI websocket requires a signed handshake even for public index
    data — so credentials are required to run this app for real.
