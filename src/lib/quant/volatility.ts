@@ -6,9 +6,13 @@ export const TARGET_STEP_MS = 5000;
 /**
  * Log returns spanning more than this are treated as a data outage (a
  * polling gap, an API error stretch, etc.) and excluded so a stale
- * reconnect doesn't masquerade as a single giant realized move.
+ * reconnect doesn't masquerade as a single giant realized move. Sized to
+ * admit the 60-second-spaced points from the Binance 1-minute-kline
+ * volatility backfill (see engine/backfill.ts) as legitimate consecutive
+ * observations, not an outage, while still catching genuine multi-minute
+ * gaps in the live feed.
  */
-export const MAX_GAP_MS = 20_000;
+export const MAX_GAP_MS = 65_000;
 
 /** Returns spanning less than this are dropped — duplicate/near-duplicate
  * timestamps blow up the variance estimate once divided by a tiny dt. */

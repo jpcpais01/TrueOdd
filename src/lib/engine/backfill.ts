@@ -33,6 +33,10 @@ export async function ensureVolatilityHistoryBackfilled(
       console.log(
         `[backfill] seeded ${history.length} Binance BTCUSDT ticks (~${minutesNeeded}min) into the volatility lookback window`,
       );
+    } else {
+      console.warn(
+        "[backfill] Binance returned no usable history this attempt (network issue, geofencing, or symbol/interval rejected) — will retry next tick",
+      );
     }
   } catch (err) {
     console.error("[backfill] Binance backfill failed, will retry on a later tick:", err);

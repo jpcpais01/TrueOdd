@@ -70,11 +70,22 @@ Waiting for enough live Kalshi BRTI history to trust a volatility estimate takes
 hours (`lookbackMarkets × 15` minutes — 2.5 hours with the default of 10). Rather than
 sit in warm-up that whole time, the engine checks on every tick whether the persisted
 BRTI history actually covers the required window; if it doesn't yet, it fetches that much
-BTCUSDT 1-second close history from Binance's public API (no credentials, no rate-limit
-concerns for personal use) and seeds it into the same table, tagged with a distinct
-`BACKFILL` source so it's never confused with a real Kalshi observation
-(`src/lib/engine/backfill.ts`). This is a one-time effective no-op once coverage is
-sufficient — later ticks just see the window is already covered and skip it.
+BTCUSDT 1-minute close history from Binance's public API (no credentials) and seeds it
+into the same table, tagged with a distinct `BACKFILL` source so it's never confused with
+a real Kalshi observation (`src/lib/engine/backfill.ts`, `src/lib/binance/klines.ts`).
+This is a one-time effective no-op once coverage is sufficient — later ticks just see the
+window is already covered and skip it.
+
+Uses **api.binance.us**, not api.binance.com: Binance.com geofences requests from
+US-located IPs (HTTP 451, "restricted location"), and Vercel builds default to a US
+region — calls from a Vercel-deployed function to binance.com would silently fail (each
+failure is caught and logged, never surfaced as an app error, so this could otherwise
+look exactly like "warm-up just isn't clearing" with no visible cause). Override
+`BINANCE_API_BASE` if your deployment region needs a different endpoint. Uses 1-minute
+bars rather than 1-second: one API call covers the whole window (150 rows for the
+default lookback, well under Binance's 1000-row cap) instead of several chunked calls,
+and it sidesteps any uncertainty about whether Binance.US has rolled out the newer
+1-second interval the same way binance.com has.
 
 **What this does and doesn't affect:** Binance is used *only* to seed the historical
 window that feeds the realized-volatility number. It never touches anything settlement-
