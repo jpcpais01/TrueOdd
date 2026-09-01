@@ -1,10 +1,10 @@
 import { prisma } from "@/lib/db/prisma";
-import { fetchBrtiOnce, type BrtiTick } from "@/lib/kalshi/brti";
+import { fetchBrtiWindow, type BrtiTick } from "@/lib/kalshi/brti";
 import { runMonteCarlo } from "@/lib/quant/montecarlo";
 import { computeEdge, decideEntry } from "@/lib/quant/edge";
 import { computeFill } from "@/lib/quant/pnl";
 import { settlementWindowFor } from "@/lib/quant/settlement";
-import { ingestBrtiTick } from "./brtiIngest";
+import { ingestBrtiTick, ingestBrtiTicks } from "./brtiIngest";
 import { syncMarkets } from "./marketTracker";
 import { getBestAsksForMarket } from "./marketData";
 import { computeRollingVolatility, type RollingVolatility } from "./volatilityWindow";
@@ -46,8 +46,18 @@ export async function runEngineTick(opts: { latestBrti?: BrtiTick } = {}): Promi
   let brti: BrtiTick | null = null;
   let brtiError: string | null = null;
   try {
-    brti = opts.latestBrti ?? (await fetchBrtiOnce());
-    await ingestBrtiTick(brti);
+    if (opts.latestBrti) {
+      brti = opts.latestBrti;
+      await ingestBrtiTick(brti);
+    } else {
+      // CF Benchmarks returns a trailing ~60s window per request, not just
+      // the latest point — bulk-ingest all of it so even an occasional
+      // self-fetch (dashboard heartbeat, cron) backfills a full minute of
+      // 1-second resolution instead of a single row.
+      const window = await fetchBrtiWindow();
+      await ingestBrtiTicks(window);
+      brti = window[window.length - 1]!;
+    }
   } catch (err) {
     brtiError = err instanceof Error ? err.message : "BRTI fetch failed";
     console.error("[engine] BRTI ingestion failed", err);

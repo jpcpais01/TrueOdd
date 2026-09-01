@@ -18,3 +18,15 @@ export async function ingestBrtiTick(tick: BrtiTick, source: TickSource = "WS"):
     update: { value: tick.value },
   });
 }
+
+/**
+ * Bulk variant — CF Benchmarks' REST passthrough returns a trailing window
+ * of ~60 one-second observations per request, not just the latest point, so
+ * every poll can backfill a full minute of 1-second-resolution history for
+ * free. Upserts are deduplicated by rounded timestamp exactly like the
+ * single-tick path, so calling this repeatedly with overlapping windows
+ * (as normal polling does) is safe and idempotent.
+ */
+export async function ingestBrtiTicks(ticks: BrtiTick[], source: TickSource = "WS"): Promise<void> {
+  await Promise.all(ticks.map((t) => ingestBrtiTick(t, source)));
+}

@@ -8,36 +8,38 @@
  * a small VPS, Railway/Fly/Render, a Raspberry Pi, tmux/pm2/systemd on your
  * own machine — pointed at the same DATABASE_URL as the Vercel deployment.
  *
- * BRTI is polled once per second over Kalshi's CF Benchmarks REST
- * passthrough (not a websocket — see src/lib/kalshi/brti.ts for why) and
- * ingested as it arrives, giving full 1-second resolution for the
- * settlement-window replication. Separately, on a 5-second timer, it runs
- * one full engine cycle (market sync, Monte Carlo, snapshot persistence,
- * paper-trade evaluation) off the latest cached BRTI value.
+ * BRTI is read over Kalshi's CF Benchmarks REST passthrough (not a
+ * websocket — see src/lib/kalshi/brti.ts for why), and each request
+ * returns a trailing window of ~60 one-second observations rather than
+ * just the latest point — so polling well under once a minute still keeps
+ * 1-second resolution gap-free, even tolerating an occasional missed poll.
+ * Separately, on a 5-second timer, it runs one full engine cycle (market
+ * sync, Monte Carlo, snapshot persistence, paper-trade evaluation) off the
+ * latest cached BRTI value.
  */
 import "dotenv/config";
 import { startBrtiPolling, type BrtiTick } from "../src/lib/kalshi/brti";
-import { ingestBrtiTick } from "../src/lib/engine/brtiIngest";
+import { ingestBrtiTicks } from "../src/lib/engine/brtiIngest";
 import { runEngineTick } from "../src/lib/engine/tick";
 
 const TICK_INTERVAL_MS = 5000;
-const BRTI_POLL_INTERVAL_MS = 1000;
+const BRTI_POLL_INTERVAL_MS = 20_000; // well under the ~60s trailing window each poll returns
 
 function log(...args: unknown[]) {
   console.log(new Date().toISOString(), ...args);
 }
 
 let latest: BrtiTick | null = null;
-let ticksReceived = 0;
+let windowsReceived = 0;
 let lastBrtiErrorLoggedAt = 0;
 
 log("[collector] starting — polling Kalshi CF Benchmarks BRTI feed");
 
 const poller = startBrtiPolling(
-  (t) => {
-    latest = t;
-    ticksReceived++;
-    ingestBrtiTick(t).catch((err) => log("[collector] failed to persist BRTI tick:", err));
+  (window) => {
+    latest = window[window.length - 1] ?? latest;
+    windowsReceived++;
+    ingestBrtiTicks(window).catch((err) => log("[collector] failed to persist BRTI window:", err));
   },
   (err) => {
     // BRTI polling errors are frequent-ish if misconfigured; throttle the log.
@@ -68,7 +70,7 @@ async function tick() {
     const traded = result.tradesOpened.length > 0 ? result.tradesOpened.join(", ") : "-";
     const brtiStr = result.brti ? result.brti.value.toFixed(2) : `ingest failed: ${result.brtiError}`;
     log(
-      `[collector] tick ok | brti=${brtiStr} | open=${openTickers} | warmup=${result.volatility.warmup} | sigma5s=${result.volatility.sigma5s.toFixed(6)} | entered=${traded} | total ticks seen=${ticksReceived}`,
+      `[collector] tick ok | brti=${brtiStr} | open=${openTickers} | warmup=${result.volatility.warmup} | sigma5s=${result.volatility.sigma5s.toFixed(6)} | entered=${traded} | brti windows polled=${windowsReceived}`,
     );
   } catch (err) {
     log("[collector] engine tick failed:", err);
