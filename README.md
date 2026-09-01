@@ -65,12 +65,20 @@ want both:
 - **The dashboard itself** also drives the engine: while the main screen (`/`) is open in
   a browser, it POSTs `/api/tick` every 5 seconds as a heartbeat, so opening the app is
   enough to collect data and trade in real time even without the worker running.
-- **Vercel Cron** (`vercel.json`, `/api/cron/tick`) hits the engine once a minute as a
-  safety net so collection doesn't fully stop if neither of the above is active. Note
-  Vercel's Hobby plan only supports daily cron; per-minute cron requires a Pro plan —
-  the worker process is the reliable option regardless of plan.
+- **Vercel Cron** is *optional* and off by default (no `vercel.json` crons block, so the
+  project imports cleanly on the free Hobby plan). `/api/cron/tick` exists and works —
+  it's just not wired to a schedule out of the box, because Hobby only allows daily cron,
+  which isn't useful at 5s cadence anyway. If you're on a **Pro** plan, add a `vercel.json`
+  with:
+  ```json
+  {
+    "crons": [{ "path": "/api/cron/tick", "schedule": "* * * * *" }]
+  }
+  ```
+  as a once-a-minute safety net so collection doesn't fully stop if neither of the above
+  is active. The worker process is the reliable option regardless of plan.
 
-All three call the exact same idempotent tick logic (`runEngineTick`), so there's no
+All paths call the exact same idempotent tick logic (`runEngineTick`), so there's no
 double-counting: BRTI ingestion dedupes to one row per second, and trades are guarded by
 a unique constraint (max one entry per market).
 
@@ -147,8 +155,9 @@ npm run typecheck
    ```
    (Or wire this into a Vercel build step / `postinstall` if you prefer — not done by
    default so a build never accidentally migrates a database you didn't intend.)
-4. Deploy. `vercel.json` already defines the `/api/cron/tick` cron job (requires a Pro
-   plan for per-minute scheduling; Hobby will fall back to Vercel's daily minimum).
+4. Deploy — no `vercel.json` is required, so this works on the Hobby plan out of the box.
+   (Optional, Pro plan only: add a `vercel.json` with a per-minute cron for
+   `/api/cron/tick` as a safety net — see above.)
 5. **Run the collector somewhere that stays on**, pointed at the same `DATABASE_URL` —
    this is the piece Vercel itself cannot host. A $5-6/month VPS or a free-tier
    Railway/Fly worker is enough; it only needs Node and outbound network access.
