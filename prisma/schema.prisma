@@ -14,7 +14,11 @@ datasource db {
   // default DATABASE_URL) — Prisma's fix is a separate direct connection
   // used only for migrations, while `url` above (pooled, serverless-safe)
   // still handles all normal query-time traffic.
-  directUrl = env("DIRECT_URL")
+  //
+  // DATABASE_URL_UNPOOLED is the exact name Neon's Vercel integration
+  // already auto-creates alongside DATABASE_URL — no manual env var
+  // needed, it's set the moment the integration is added.
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 // One row per Kalshi KXBTC15M market instance (e.g. KXBTC15M-26APR100545-45).
