@@ -7,33 +7,21 @@ export default function PositionCard({ position }: { position: PositionDTO }) {
   const isYes = position.side === "YES";
 
   return (
-    <Panel glow={isYes ? "yes" : "no"} className="px-4 py-3">
+    <Panel glow={isYes ? "yes" : "no"} className="px-3 py-2.5">
       <div className="flex items-center justify-between">
-        <span className="font-display text-[9px] tracking-wide text-arcade-violet">
-          PAPER POSITION
-        </span>
-        <span
-          className={clsx(
-            "font-display text-[8px]",
-            position.status === "OPEN" ? "text-arcade-cyan" : "text-arcade-dim",
-          )}
-        >
-          {position.status}
-        </span>
-      </div>
-      <div className="mt-2 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className={clsx("font-display text-sm", isYes ? "text-arcade-yes" : "text-arcade-no")}>
+        <span className="flex items-center gap-1.5">
+          <span className="font-display text-[8px] tracking-wide text-arcade-violet">POSITION</span>
+          <span className={clsx("font-display text-[10px]", isYes ? "text-arcade-yes" : "text-arcade-no")}>
             {position.side}
           </span>
-          <span className="tabular font-mono text-xs text-arcade-dim">
+          <span className="tabular font-mono text-[10px] text-arcade-dim">
             {position.contracts}× @ {formatCents(position.entryPriceCts)}
           </span>
-        </div>
+        </span>
         {position.pnl !== null ? (
           <span
             className={clsx(
-              "tabular font-mono text-base font-semibold",
+              "tabular font-mono text-sm font-semibold",
               position.pnl >= 0 ? "text-arcade-yes" : "text-arcade-no",
             )}
           >
@@ -41,7 +29,7 @@ export default function PositionCard({ position }: { position: PositionDTO }) {
             {formatUsd(position.pnl)}
           </span>
         ) : (
-          <span className="tabular font-mono text-xs text-arcade-dim">
+          <span className="tabular font-mono text-[10px] text-arcade-dim">
             {formatUsd(position.stake)} staked
           </span>
         )}

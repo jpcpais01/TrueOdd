@@ -12,20 +12,17 @@ export default function WarmupBanner({
   const pct = Math.min(100, Math.round((marketsUsed / Math.max(1, marketsRequired)) * 100));
 
   return (
-    <Panel glow="amber" className="mb-3 px-4 py-3">
-      <div className="flex items-center gap-2">
-        <span className="animate-blink text-arcade-amber">●</span>
-        <span className="font-display text-[9px] tracking-wide text-arcade-amber">
-          WARM-UP MODE
+    <Panel glow="amber" className="mb-2.5 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5">
+          <span className="animate-blink text-arcade-amber">●</span>
+          <span className="font-display text-[8px] tracking-wide text-arcade-amber">WARM-UP</span>
+        </span>
+        <span className="tabular font-mono text-[10px] text-arcade-dim">
+          {marketsUsed.toFixed(1)}/{marketsRequired} · {sampleSize.toLocaleString()} returns
         </span>
       </div>
-      <p className="mt-1.5 text-xs leading-relaxed text-arcade-dim">
-        Collecting BRTI history — {marketsUsed.toFixed(1)}/{marketsRequired} market-widths
-        covered in the volatility lookback window ({sampleSize.toLocaleString()} clean 5s returns
-        so far). The model will not paper-trade until enough history exists to trust the vol
-        estimate.
-      </p>
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-black/40">
+      <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-black/40">
         <div
           className="h-full rounded-full bg-arcade-amber transition-all duration-500"
           style={{ width: `${pct}%` }}

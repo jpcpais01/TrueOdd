@@ -2,8 +2,9 @@
 
 import { useAppState } from "@/hooks/useAppState";
 import { useNow } from "@/hooks/useNow";
+import { usePriceHistory } from "@/hooks/usePriceHistory";
 import WarmupBanner from "@/components/dashboard/WarmupBanner";
-import StrikeHero from "@/components/dashboard/StrikeHero";
+import LiveChart from "@/components/dashboard/LiveChart";
 import SideCard from "@/components/dashboard/SideCard";
 import PositionCard from "@/components/dashboard/PositionCard";
 import RecentSettledStrip from "@/components/dashboard/RecentSettledStrip";
@@ -13,6 +14,13 @@ import Panel from "@/components/ui/Panel";
 export default function DashboardPage() {
   const { state, error, tickError } = useAppState({ heartbeat: true });
   const now = useNow(1000);
+
+  const primary = state?.markets[0] ?? null;
+  const latestPoint =
+    primary?.snapshot && state?.brti
+      ? { timestamp: new Date(primary.snapshot.timestamp).getTime(), brti: state.brti.value }
+      : null;
+  const points = usePriceHistory(primary?.ticker ?? null, latestPoint);
 
   if (error && !state) {
     return (
@@ -24,29 +32,27 @@ export default function DashboardPage() {
 
   if (!state) {
     return (
-      <div className="animate-pulse space-y-3">
-        <Panel className="h-40" />
-        <div className="grid grid-cols-2 gap-3">
-          <Panel className="h-32" />
-          <Panel className="h-32" />
+      <div className="animate-pulse space-y-2.5">
+        <Panel className="h-72" />
+        <div className="grid grid-cols-2 gap-2">
+          <Panel className="h-12" />
+          <Panel className="h-12" />
         </div>
       </div>
     );
   }
 
-  const primary = state.markets[0] ?? null;
-
   return (
     <div>
       {tickError && (
-        <Panel glow="no" className="mb-3 px-4 py-3">
+        <Panel glow="no" className="mb-2.5 px-3 py-2.5">
           <div className="flex items-center gap-2">
             <span className="text-arcade-no">✕</span>
-            <span className="font-display text-[9px] tracking-wide text-arcade-no">
+            <span className="font-display text-[8px] tracking-wide text-arcade-no">
               BRTI FEED ERROR
             </span>
           </div>
-          <p className="mt-1.5 text-xs leading-relaxed text-arcade-dim">{tickError}</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-arcade-dim">{tickError}</p>
         </Panel>
       )}
 
@@ -61,22 +67,24 @@ export default function DashboardPage() {
       {!primary ? (
         <EmptyState message="No BTC 15-minute market is open right now. A fresh window opens every 15 minutes — check back shortly." />
       ) : (
-        <div className="space-y-3">
-          <StrikeHero
+        <div className="space-y-2.5">
+          <LiveChart
             ticker={primary.ticker}
-            floorStrike={primary.floorStrike}
+            points={points}
+            strike={primary.floorStrike}
             brti={state.brti?.value ?? null}
             closeTimeMs={new Date(primary.closeTime).getTime()}
             nowMs={now}
             observedSecs={primary.snapshot?.observedSecs ?? 0}
+            modelYes={primary.snapshot?.modelYes ?? null}
+            modelNo={primary.snapshot?.modelNo ?? null}
           />
 
-          {primary.snapshot ? (
-            <div className="grid grid-cols-2 gap-3">
+          {primary.snapshot && (
+            <div className="grid grid-cols-2 gap-2">
               <SideCard
                 side="YES"
                 askCts={primary.snapshot.yesAsk}
-                modelProb={primary.snapshot.modelYes}
                 edge={primary.snapshot.edgeYes}
                 minEdge={state.settings.minEdge}
                 entered={primary.position?.side === "YES"}
@@ -84,40 +92,35 @@ export default function DashboardPage() {
               <SideCard
                 side="NO"
                 askCts={primary.snapshot.noAsk}
-                modelProb={primary.snapshot.modelNo}
                 edge={primary.snapshot.edgeNo}
                 minEdge={state.settings.minEdge}
                 entered={primary.position?.side === "NO"}
               />
             </div>
-          ) : (
-            <EmptyState message="Model is warming up its first read on this market…" />
           )}
 
           {primary.position && <PositionCard position={primary.position} />}
 
-          <Panel className="px-4 py-2.5">
-            <div className="flex items-center justify-between text-[10px] text-arcade-dim">
-              <span>
-                σ<sub>5s</sub>{" "}
-                <span className="tabular font-mono text-arcade-text">
-                  {(state.volatility.sigma5s * 100).toFixed(4)}%
-                </span>
+          <div className="flex items-center justify-between rounded-xl border border-white/5 bg-arcade-panel2/50 px-3 py-1.5 text-[9px] text-arcade-dim">
+            <span>
+              σ<sub>5s</sub>{" "}
+              <span className="tabular font-mono text-arcade-text">
+                {(state.volatility.sigma5s * 100).toFixed(4)}%
               </span>
-              <span>
-                min edge{" "}
-                <span className="tabular font-mono text-arcade-text">
-                  {(state.settings.minEdge * 100).toFixed(1)}%
-                </span>
+            </span>
+            <span>
+              min edge{" "}
+              <span className="tabular font-mono text-arcade-text">
+                {(state.settings.minEdge * 100).toFixed(1)}%
               </span>
-              <span>
-                stake{" "}
-                <span className="tabular font-mono text-arcade-text">
-                  ${state.settings.paperStake}
-                </span>
+            </span>
+            <span>
+              stake{" "}
+              <span className="tabular font-mono text-arcade-text">
+                ${state.settings.paperStake}
               </span>
-            </div>
-          </Panel>
+            </span>
+          </div>
         </div>
       )}
 

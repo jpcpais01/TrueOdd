@@ -6,16 +6,16 @@ export default function RecentSettledStrip({ markets }: { markets: SettledMarket
   if (markets.length === 0) return null;
 
   return (
-    <div className="mt-4">
-      <div className="mb-1.5 px-1 text-[10px] uppercase tracking-widest text-arcade-dim">
+    <div className="mt-3">
+      <div className="mb-1.5 px-1 text-[9px] uppercase tracking-widest text-arcade-dim">
         Recent settlements
       </div>
-      <div className="flex gap-2 overflow-x-auto pb-1">
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
         {markets.map((m) => (
           <div
             key={m.ticker}
             className={clsx(
-              "flex min-w-[86px] flex-col items-center gap-0.5 rounded-xl border px-2.5 py-2",
+              "flex min-w-[72px] flex-col items-center gap-0.5 rounded-xl border px-2 py-1.5",
               m.settlementSide === "YES"
                 ? "border-arcade-yes/25 bg-arcade-yes/5"
                 : "border-arcade-no/25 bg-arcade-no/5",
