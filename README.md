@@ -87,27 +87,36 @@ dominates the window.
 
 ## Why there's a separate collector process
 
-BRTI is read over plain signed REST (`GET /cfbenchmarks/values?id=BRTI`), not a
-websocket — an earlier version of this app used Kalshi's CF Benchmarks websocket feed,
-but Vercel serverless functions don't reliably support outbound websocket upgrades
-(connections there could sit open with no `open`/`error`/`close` event ever firing), so
-it was switched to REST, reusing the exact signed-request path that market/orderbook
-reads already use successfully. That fixes *reachability*, but Vercel serverless
-functions still can't run an unattended loop 24/7 — a function only runs for the
-duration of a request. So there are still three ways data gets collected, and you'll
-likely want more than one:
+Vercel serverless functions can't hold a persistent connection or run an unattended loop
+24/7 — a function only runs for the duration of a request. That's why there are two
+different BRTI integrations, used by two different code paths, not one:
+
+- **Serverless (`/api/tick`, the dashboard heartbeat, cron)** reads BRTI over plain
+  signed REST (`GET /cfbenchmarks/values?id=BRTI`) — a one-shot request per invocation. A
+  websocket was tried here first, but Vercel serverless functions don't reliably support
+  outbound websocket upgrades from inside a request (a connection attempt there could sit
+  open with no `open`/`error`/`close` event ever firing), so this path stays on REST.
+- **The standalone collector** holds a genuine persistent websocket to Kalshi's CF
+  Benchmarks BRTI channel (`src/lib/kalshi/brtiStream.ts`) and receives real server push,
+  not polling — viable here specifically because this is a normal long-running Node
+  process, not a serverless function. If that connection is ever down, each tick
+  transparently falls back to the same one-shot REST fetch the serverless path uses, so
+  there's no dead air either way.
+
+So there are still three ways data gets collected, and you'll likely want more than one:
 
 - **`npm run collector`** — a standalone Node process (`scripts/collector.ts`) that runs
-  a full engine cycle **every second** (BRTI fetch/ingest, market sync, Monte Carlo,
-  snapshot persistence, paper-trade evaluation), continuously, independent of anyone
-  viewing the dashboard. It's cheap enough at 1-second cadence because it precomputes a
-  `SimulationRegime` once and re-prices it every tick rather than resimulating from
-  scratch (see "How it works" above), refreshing that regime — and only then drawing
-  fresh randomness — once every 5 minutes. Run this anywhere that stays on: a small VPS,
-  Railway/Fly/Render, a Raspberry Pi, `pm2`/`systemd`/`tmux` on your own machine —
-  pointed at the **same** `DATABASE_URL` as your Vercel deployment. This is what actually
-  builds and maintains the rolling BRTI history needed to exit warm-up mode, and it's the
-  only path that gets you 1-second-cadence probability updates.
+  a full engine cycle **every second** off the live websocket feed (market sync, Monte
+  Carlo, snapshot persistence, paper-trade evaluation), continuously, independent of
+  anyone viewing the dashboard. It's cheap enough at 1-second cadence because it
+  precomputes a `SimulationRegime` once and re-prices it every tick rather than
+  resimulating from scratch (see "How it works" above), refreshing that regime — and only
+  then drawing fresh randomness — once every 5 minutes. Run this anywhere that stays on: a
+  small VPS, Railway/Fly/Render, a Raspberry Pi, `pm2`/`systemd`/`tmux` on your own
+  machine — pointed at the **same** `DATABASE_URL` as your Vercel deployment. This is what
+  actually builds and maintains the rolling BRTI history needed to exit warm-up mode, and
+  it's the only path that gets you genuine sub-5-second, push-driven freshness — **if you
+  want the dashboard to feel truly live, this is the piece to run.**
 - **The dashboard itself** also drives the engine: while the main screen (`/`) is open in
   a browser, it POSTs `/api/tick` every 5 seconds as a heartbeat, so opening the app is
   enough to collect data and trade in real time even without the worker running — just at
@@ -237,7 +246,9 @@ npm run typecheck
 | `KALSHI_PRIVATE_KEY` | yes* | PEM private key, `\n`-escaped on one line. |
 | `KALSHI_PRIVATE_KEY_BASE64` | yes* | Alternative to the above — base64 of the PEM file. |
 | `KALSHI_API_BASE` | no | Default `https://api.elections.kalshi.com/trade-api/v2`. |
+| `KALSHI_WS_URL` | no | Default `wss://api.elections.kalshi.com/trade-api/ws/v2`. Only used by the collector. |
 | `KALSHI_BTC_SERIES_TICKER` | no | Default `KXBTC15M`. |
+| `BINANCE_SYMBOL` | no | Default `BTCUSDT`. Volatility backfill only — see above. |
 | `CRON_SECRET` | no | If set, required as a Bearer token on `/api/cron/tick`. |
 
 \* one of `KALSHI_PRIVATE_KEY` / `KALSHI_PRIVATE_KEY_BASE64` is required.
@@ -249,7 +260,9 @@ src/
   lib/
     quant/       pure, unit-tested math: volatility, Monte Carlo, settlement
                  averaging, edge, paper P&L/calibration — no I/O, no DB
-    kalshi/      REST client, RSA-PSS request signing, BRTI (CF Benchmarks) reader
+    kalshi/      REST client, RSA-PSS request signing, BRTI over REST (brti.ts,
+                 serverless) and over websocket (brtiStream.ts, collector-only)
+    binance/     public BTCUSDT klines — volatility backfill only, see above
     engine/      orchestration: market tracking/settlement, volatility window,
                  the 5s tick pipeline, settings
     db/          Prisma client singleton
