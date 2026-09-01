@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { runMonteCarlo, SETTLEMENT_WINDOW_SECONDS } from "@/lib/quant/montecarlo";
+import {
+  runMonteCarlo,
+  generateRegime,
+  evaluateWithRegime,
+  SETTLEMENT_WINDOW_SECONDS,
+} from "@/lib/quant/montecarlo";
 import { mulberry32 } from "@/lib/quant/rng";
 
 describe("runMonteCarlo", () => {
@@ -126,5 +131,95 @@ describe("runMonteCarlo", () => {
         observedWindowTicks: [],
       }),
     ).toThrow();
+  });
+});
+
+describe("generateRegime / evaluateWithRegime", () => {
+  it("is fully deterministic (100% one side) with zero volatility, same as runMonteCarlo", () => {
+    const regime = generateRegime(0, 500, mulberry32(1));
+    const above = evaluateWithRegime({
+      regime,
+      currentPrice: 65_100,
+      strike: 65_000,
+      msUntilWindowStart: 120_000,
+      observedWindowTicks: [],
+    });
+    expect(above.modelYes).toBe(1);
+
+    const below = evaluateWithRegime({
+      regime,
+      currentPrice: 64_900,
+      strike: 65_000,
+      msUntilWindowStart: 120_000,
+      observedWindowTicks: [],
+    });
+    expect(below.modelNo).toBe(1);
+  });
+
+  it("reproduces runMonteCarlo's probability within Monte Carlo noise for the same inputs", () => {
+    const sigma5s = 0.0006;
+    const shared = {
+      currentPrice: 65_050,
+      strike: 65_000,
+      msUntilWindowStart: 300_000,
+      observedWindowTicks: [] as number[],
+    };
+
+    const fresh = runMonteCarlo({ ...shared, sigma5s, paths: 20_000, rng: mulberry32(11) });
+    const regime = generateRegime(sigma5s, 20_000, mulberry32(22));
+    const cached = evaluateWithRegime({ regime, ...shared });
+
+    expect(cached.modelYes).toBeGreaterThan(fresh.modelYes - 0.03);
+    expect(cached.modelYes).toBeLessThan(fresh.modelYes + 0.03);
+  });
+
+  it("re-prices smoothly as price and time-remaining change, reusing the same regime", () => {
+    const regime = generateRegime(0.0006, 20_000, mulberry32(5));
+    const base = { strike: 65_000, observedWindowTicks: [] as number[] };
+
+    const t1 = evaluateWithRegime({ regime, ...base, currentPrice: 65_020, msUntilWindowStart: 400_000 });
+    const t2 = evaluateWithRegime({ regime, ...base, currentPrice: 65_040, msUntilWindowStart: 395_000 });
+    const t3 = evaluateWithRegime({ regime, ...base, currentPrice: 65_060, msUntilWindowStart: 390_000 });
+
+    // price drifting up and time ticking down (same regime, no resimulation)
+    // should push modelYes upward monotonically, exactly like fresh re-simulation would.
+    expect(t1.modelYes).toBeLessThan(t2.modelYes);
+    expect(t2.modelYes).toBeLessThan(t3.modelYes);
+  });
+
+  it("honors already-observed window ticks the same way runMonteCarlo does", () => {
+    const regime = generateRegime(0, 100, mulberry32(1));
+    const observed = new Array(59).fill(64_990);
+    const result = evaluateWithRegime({
+      regime,
+      currentPrice: 64_990,
+      strike: 65_000,
+      msUntilWindowStart: 0,
+      observedWindowTicks: observed,
+    });
+    expect(result.modelNo).toBe(1);
+  });
+
+  it("advancing through the window second-by-second uses a consistent shock sequence", () => {
+    // With zero vol the specific shocks don't matter, but this exercises the
+    // observedCount-indexed slicing path without going out of bounds at the
+    // boundary (observedCount = 59, remaining = 1).
+    const regime = generateRegime(0.0004, 50, mulberry32(3));
+    for (let observedCount = 0; observedCount <= 60; observedCount++) {
+      const observed = new Array(observedCount).fill(65_000);
+      expect(() =>
+        evaluateWithRegime({
+          regime,
+          currentPrice: 65_000,
+          strike: 65_000,
+          msUntilWindowStart: 0,
+          observedWindowTicks: observed,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it("throws on non-positive path counts", () => {
+    expect(() => generateRegime(0.001, 0, mulberry32(1))).toThrow();
   });
 });

@@ -2,8 +2,9 @@
 
 A mobile-first paper-trading research dashboard for Kalshi's rolling **BTC 15-minute
 Up/Down** markets (`KXBTC15M`). It runs a from-scratch Monte Carlo fair-probability
-model against Kalshi's real order book every 5 seconds, and paper-buys when the model
-disagrees with the market by more than a configurable edge threshold.
+model against Kalshi's real order book — once a second when the standalone collector is
+running, every 5 seconds from the dashboard/serverless path alone — and paper-buys when
+the model disagrees with the market by more than a configurable edge threshold.
 
 **This app never places a real order.** Every trade is simulated (`Trade` rows in the
 database); there is no order-submission code path anywhere in this repo.
@@ -30,8 +31,8 @@ good before reading anything into the P&L.
    collector, and once per tick from the dashboard's heartbeat / cron. Using REST rather
    than a websocket here is deliberate — see "Why there's a separate collector process"
    below.
-3. **Volatility** — every tick, realized vol is re-estimated as the standard deviation
-   of 5-second-equivalent log returns across the previous *N* (default 10) **completed**
+3. **Volatility** — realized vol is estimated as the standard deviation of
+   5-second-equivalent log returns across the previous *N* (default 10) **completed**
    markets, using the full persisted BRTI history spanning them
    (`src/lib/quant/volatility.ts`, `src/lib/engine/volatilityWindow.ts`). Below a minimum
    clean-sample threshold, or with fewer than *N* completed markets on record, the app
@@ -43,14 +44,22 @@ good before reading anything into the P&L.
    *already recorded* are treated as fixed and only the remaining unknown seconds are
    simulated — this reproduces Kalshi's actual settlement mechanism (the average of 60
    one-second BRTI observations), not just the final tick (`src/lib/quant/montecarlo.ts`).
+   The standalone collector doesn't redraw all 10,000 paths on every tick: it precomputes
+   a `SimulationRegime` (the random shocks) once per volatility estimate and cheaply
+   re-prices it against the latest price/time-remaining every second — mathematically
+   valid because a driftless GBM's future distribution depends only on the current state,
+   not simulation history. The regime itself is only regenerated every 5 minutes (or when
+   the volatility estimate meaningfully updates); the dashboard/serverless path has
+   nowhere to cache a regime between stateless invocations, so it always runs a fresh
+   simulation each time it ticks.
 5. **Edge & paper trading** — `edgeYes = modelYes - yesBestAsk`, `edgeNo = modelNo -
    noBestAsk`. If either edge clears `MIN_EDGE` (default 2%), the engine paper-buys that
    side at its best ask — at most one entry per market, never on stale BRTI data or an
    incomplete order book (`src/lib/quant/edge.ts`, `src/lib/engine/tick.ts`).
-6. **Persistence** — *every* 5-second model read is stored (`ModelSnapshot`), not just
-   trades, specifically so the raw BRTI/strike/time-remaining/asks/probabilities/edges
-   are available for later strategy research, independent of whether that tick triggered
-   a trade.
+6. **Persistence** — *every* model read is stored (`ModelSnapshot`), not just trades,
+   specifically so the raw BRTI/strike/time-remaining/asks/probabilities/edges are
+   available for later strategy research, independent of whether that tick triggered a
+   trade.
 
 ## Why there's a separate collector process
 
@@ -60,19 +69,26 @@ but Vercel serverless functions don't reliably support outbound websocket upgrad
 (connections there could sit open with no `open`/`error`/`close` event ever firing), so
 it was switched to REST, reusing the exact signed-request path that market/orderbook
 reads already use successfully. That fixes *reachability*, but Vercel serverless
-functions still can't run an unattended loop 24/7 at 5-second cadence — a function only
-runs for the duration of a request. So there are still three ways data gets collected,
-and you'll likely want more than one:
+functions still can't run an unattended loop 24/7 — a function only runs for the
+duration of a request. So there are still three ways data gets collected, and you'll
+likely want more than one:
 
-- **`npm run collector`** — a standalone Node process (`scripts/collector.ts`) that polls
-  BRTI once a second and runs the 5-second engine loop continuously, independent of
-  anyone viewing the dashboard. Run this anywhere that stays on: a small VPS,
+- **`npm run collector`** — a standalone Node process (`scripts/collector.ts`) that runs
+  a full engine cycle **every second** (BRTI fetch/ingest, market sync, Monte Carlo,
+  snapshot persistence, paper-trade evaluation), continuously, independent of anyone
+  viewing the dashboard. It's cheap enough at 1-second cadence because it precomputes a
+  `SimulationRegime` once and re-prices it every tick rather than resimulating from
+  scratch (see "How it works" above), refreshing that regime — and only then drawing
+  fresh randomness — once every 5 minutes. Run this anywhere that stays on: a small VPS,
   Railway/Fly/Render, a Raspberry Pi, `pm2`/`systemd`/`tmux` on your own machine —
   pointed at the **same** `DATABASE_URL` as your Vercel deployment. This is what actually
-  builds and maintains the rolling BRTI history needed to exit warm-up mode.
+  builds and maintains the rolling BRTI history needed to exit warm-up mode, and it's the
+  only path that gets you 1-second-cadence probability updates.
 - **The dashboard itself** also drives the engine: while the main screen (`/`) is open in
   a browser, it POSTs `/api/tick` every 5 seconds as a heartbeat, so opening the app is
-  enough to collect data and trade in real time even without the worker running.
+  enough to collect data and trade in real time even without the worker running — just at
+  5-second cadence with a fresh (not cached) simulation each time, since a stateless
+  serverless invocation has nowhere to keep a regime between requests.
 - **Vercel Cron** is *optional* and off by default (no `vercel.json` crons block, so the
   project imports cleanly on the free Hobby plan). `/api/cron/tick` exists and works —
   it's just not wired to a schedule out of the box, because Hobby only allows daily cron,

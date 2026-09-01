@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { fetchBrtiWindow, type BrtiTick } from "@/lib/kalshi/brti";
-import { runMonteCarlo } from "@/lib/quant/montecarlo";
+import { runMonteCarlo, evaluateWithRegime, type SimulationRegime } from "@/lib/quant/montecarlo";
 import { computeEdge, decideEntry } from "@/lib/quant/edge";
 import { computeFill } from "@/lib/quant/pnl";
 import { settlementWindowFor } from "@/lib/quant/settlement";
@@ -33,13 +33,22 @@ export interface EngineTickResult {
  * collector) skip the one-shot fetch; omitting it makes this safe to call
  * from a stateless API route too.
  *
+ * `opts.regime` lets a caller with a persistent process (the collector)
+ * pass a precomputed SimulationRegime (see quant/montecarlo.ts) so the
+ * Monte Carlo step becomes a cheap re-pricing instead of a fresh 10,000-path
+ * simulation — this is what makes calling this every second (or faster)
+ * practical. A stateless API route has nowhere to cache a regime between
+ * invocations, so it omits this and gets a fresh simulation each time.
+ *
  * Market sync/settlement (Kalshi REST, unauthenticated) and BRTI ingestion
  * (the CF Benchmarks REST passthrough, authenticated) are independent
  * Kalshi integrations — a BRTI outage or misconfiguration must never
  * prevent market detection from running, so failures there are caught
  * locally rather than aborting the whole tick.
  */
-export async function runEngineTick(opts: { latestBrti?: BrtiTick } = {}): Promise<EngineTickResult> {
+export async function runEngineTick(
+  opts: { latestBrti?: BrtiTick; regime?: SimulationRegime } = {},
+): Promise<EngineTickResult> {
   const now = new Date();
   const settings = await getSettings();
 
@@ -69,7 +78,7 @@ export async function runEngineTick(opts: { latestBrti?: BrtiTick } = {}): Promi
   const tradesOpened: string[] = [];
   if (brti) {
     for (const market of openMarkets) {
-      const opened = await processMarket(market, brti, volatility, settings, now);
+      const opened = await processMarket(market, brti, volatility, settings, now, opts.regime);
       if (opened) tradesOpened.push(market.id);
     }
   }
@@ -90,6 +99,7 @@ async function processMarket(
   volatility: RollingVolatility,
   settings: StrategySettings,
   now: Date,
+  regime?: SimulationRegime,
 ): Promise<boolean> {
   const closeMs = market.closeTime.getTime();
   const nowMs = now.getTime();
@@ -118,14 +128,30 @@ async function processMarket(
     observedWindowTicks = rows.map((r) => r.value);
   }
 
-  const mc = runMonteCarlo({
-    currentPrice: brti.value,
-    strike: market.floorStrike,
-    msUntilWindowStart,
-    sigma5s: volatility.sigma5s,
-    paths: settings.mcPaths,
-    observedWindowTicks,
-  });
+  // A caller with a persistent process (the collector) supplies a
+  // precomputed regime for a cheap re-pricing; otherwise run a fresh
+  // simulation using the volatility just recomputed this tick. The
+  // regime's own sigma5s (from when it was generated) is what's actually
+  // driving the result in that case, not necessarily this tick's freshest
+  // estimate — persisted below so snapshots reflect what was truly used.
+  const usedSigma5s = regime?.sigma5s ?? volatility.sigma5s;
+  const usedPaths = regime?.paths ?? settings.mcPaths;
+  const mc = regime
+    ? evaluateWithRegime({
+        regime,
+        currentPrice: brti.value,
+        strike: market.floorStrike,
+        msUntilWindowStart,
+        observedWindowTicks,
+      })
+    : runMonteCarlo({
+        currentPrice: brti.value,
+        strike: market.floorStrike,
+        msUntilWindowStart,
+        sigma5s: volatility.sigma5s,
+        paths: settings.mcPaths,
+        observedWindowTicks,
+      });
 
   const edges = computeEdge({
     modelYes: mc.modelYes,
@@ -147,8 +173,8 @@ async function processMarket(
       modelNo: mc.modelNo,
       edgeYes: edges.edgeYes,
       edgeNo: edges.edgeNo,
-      volatility: volatility.sigma5s,
-      simPaths: settings.mcPaths,
+      volatility: usedSigma5s,
+      simPaths: usedPaths,
       warmup: volatility.warmup,
       observedSecs: observedWindowTicks.length,
     },
