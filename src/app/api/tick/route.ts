@@ -14,15 +14,15 @@ const MIN_TICK_INTERVAL_MS = 2000;
  * throttled so several browser tabs firing at once don't hammer Kalshi.
  */
 export async function POST() {
-  const last = await prisma.modelSnapshot.findFirst({
-    orderBy: { timestamp: "desc" },
-    select: { timestamp: true },
-  });
-  if (last && Date.now() - last.timestamp.getTime() < MIN_TICK_INTERVAL_MS) {
-    return NextResponse.json({ skipped: true, reason: "throttled" });
-  }
-
   try {
+    const last = await prisma.modelSnapshot.findFirst({
+      orderBy: { timestamp: "desc" },
+      select: { timestamp: true },
+    });
+    if (last && Date.now() - last.timestamp.getTime() < MIN_TICK_INTERVAL_MS) {
+      return NextResponse.json({ skipped: true, reason: "throttled" });
+    }
+
     const result = await runEngineTick();
     return NextResponse.json({
       skipped: false,

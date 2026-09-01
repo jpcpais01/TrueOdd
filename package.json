@@ -5,7 +5,7 @@
   "description": "Paper-trading dashboard testing whether Kalshi's rolling BTC 15-minute Up/Down markets misprice relative to a statistically estimated fair probability.",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",

@@ -115,24 +115,25 @@ a unique constraint (max one entry per market).
 
 Any Postgres works. Recommended: [Neon](https://neon.tech) (what Vercel Postgres uses
 under the hood) or Vercel Postgres directly — both give you a serverless-friendly pooled
-connection string.
+connection string, and both offer a one-click "Add Integration" from inside a Vercel
+project.
+
+The schema migration is already committed (`prisma/migrations/`), and `npm run build`
+applies it automatically (`prisma migrate deploy`) — so once `DATABASE_URL` points at an
+empty Postgres database, everything else — tables, indexes, the singleton settings row —
+sets itself up on first build/deploy. There's no manual migration step to run.
 
 ```bash
 # copy the example and fill in DATABASE_URL + Kalshi credentials
 cp .env.example .env
-
-# apply the schema
-npx prisma migrate dev --name init
 ```
-
-For a fresh production database, use `npx prisma migrate deploy` instead (see below).
 
 ### 3. Install and run locally
 
 ```bash
 npm install
-npm run dev            # dashboard at http://localhost:3000
-npm run collector       # in a second terminal — the always-on data collector
+npm run build && npm run dev   # build applies the schema, then starts the dashboard at http://localhost:3000
+npm run collector              # in a second terminal — the always-on data collector
 ```
 
 Leave the collector running. On first run you'll see the **warm-up** banner until enough
@@ -150,17 +151,14 @@ npm run typecheck
 ## Deploying to Vercel
 
 1. Push this repo to GitHub and import it in Vercel.
-2. Set environment variables in the Vercel project (Settings → Environment Variables):
-   `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (or
-   `KALSHI_PRIVATE_KEY_BASE64`), and optionally `CRON_SECRET`.
-3. Run migrations against the production database before or during your first deploy:
-   ```bash
-   DATABASE_URL="<production url>" npx prisma migrate deploy
-   ```
-   (Or wire this into a Vercel build step / `postinstall` if you prefer — not done by
-   default so a build never accidentally migrates a database you didn't intend.)
-4. Deploy — no `vercel.json` is required, so this works on the Hobby plan out of the box.
-   (Optional, Pro plan only: add a `vercel.json` with a per-minute cron for
+2. Add a Postgres database — easiest via Vercel's Storage tab ("Add Integration" →
+   Neon or Vercel Postgres), which sets `DATABASE_URL` for you automatically.
+3. Set the remaining environment variables (Settings → Environment Variables):
+   `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (or `KALSHI_PRIVATE_KEY_BASE64`), and
+   optionally `CRON_SECRET`.
+4. Deploy. The build applies the database schema automatically (see above) — no manual
+   migration step, no `vercel.json` required, so this works on the Hobby plan out of the
+   box. (Optional, Pro plan only: add a `vercel.json` with a per-minute cron for
    `/api/cron/tick` as a safety net — see above.)
 5. **Run the collector somewhere that stays on**, pointed at the same `DATABASE_URL` —
    this is the piece Vercel itself cannot host. A $5-6/month VPS or a free-tier

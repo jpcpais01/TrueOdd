@@ -15,7 +15,11 @@ export default function DashboardPage() {
   const now = useNow(1000);
 
   if (error && !state) {
-    return <EmptyState message="Can't reach the engine yet. Retrying…" />;
+    return (
+      <EmptyState
+        message={error instanceof Error ? error.message : "Can't reach the engine yet. Retrying…"}
+      />
+    );
   }
 
   if (!state) {
