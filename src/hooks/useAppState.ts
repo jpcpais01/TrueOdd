@@ -12,6 +12,15 @@ async function fetchJson<T>(url: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+interface HeartbeatResult {
+  state: AppStateDTO;
+  /** Non-fatal: the engine tick's own error (e.g. the BRTI websocket
+   * rejecting auth), surfaced separately from state-fetch failures so the
+   * dashboard can show a specific reason instead of a generic "can't
+   * reach the engine" message. Market sync still runs even when this is set. */
+  tickError: string | null;
+}
+
 /**
  * Live dashboard state. `heartbeat: true` (the main dashboard screen) also
  * fires the engine tick before each read, which is what drives the 5-second
@@ -20,13 +29,22 @@ async function fetchJson<T>(url: string): Promise<T> {
 export function useAppState(opts: { heartbeat?: boolean } = {}) {
   const key = opts.heartbeat ? "/api/state?heartbeat=1" : "/api/state";
 
-  const { data, error, isLoading } = useSWR<AppStateDTO>(
+  const { data, error, isLoading } = useSWR<HeartbeatResult>(
     key,
     async () => {
+      let tickError: string | null = null;
       if (opts.heartbeat) {
-        await fetch("/api/tick", { method: "POST" }).catch(() => {});
+        try {
+          const res = await fetch("/api/tick", { method: "POST" });
+          const body = await res.json().catch(() => null);
+          if (!res.ok) tickError = body?.error ?? `tick failed (${res.status})`;
+          else if (body?.brtiError) tickError = body.brtiError;
+        } catch (e) {
+          tickError = e instanceof Error ? e.message : "tick request failed";
+        }
       }
-      return fetchJson<AppStateDTO>("/api/state");
+      const state = await fetchJson<AppStateDTO>("/api/state");
+      return { state, tickError };
     },
     {
       refreshInterval: 5000,
@@ -35,7 +53,7 @@ export function useAppState(opts: { heartbeat?: boolean } = {}) {
     },
   );
 
-  return { state: data, error, isLoading };
+  return { state: data?.state, tickError: data?.tickError ?? null, error, isLoading };
 }
 
 export function useAnalytics(opts: { refreshInterval?: number } = {}) {

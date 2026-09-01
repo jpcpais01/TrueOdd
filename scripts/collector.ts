@@ -59,8 +59,9 @@ async function tick() {
     const result = await runEngineTick({ latestBrti: latest });
     const openTickers = result.openMarkets;
     const traded = result.tradesOpened.length > 0 ? result.tradesOpened.join(", ") : "-";
+    const brtiStr = result.brti ? result.brti.value.toFixed(2) : `ingest failed: ${result.brtiError}`;
     log(
-      `[collector] tick ok | brti=${result.brti.value.toFixed(2)} | open=${openTickers} | warmup=${result.volatility.warmup} | sigma5s=${result.volatility.sigma5s.toFixed(6)} | entered=${traded} | total ticks seen=${ticksReceived}`,
+      `[collector] tick ok | brti=${brtiStr} | open=${openTickers} | warmup=${result.volatility.warmup} | sigma5s=${result.volatility.sigma5s.toFixed(6)} | entered=${traded} | total ticks seen=${ticksReceived}`,
     );
   } catch (err) {
     log("[collector] engine tick failed:", err);

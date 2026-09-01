@@ -14,7 +14,8 @@ import type { Market as MarketRow } from "@prisma/client";
 
 export interface EngineTickResult {
   now: Date;
-  brti: BrtiTick;
+  brti: BrtiTick | null;
+  brtiError: string | null;
   volatility: RollingVolatility;
   openMarkets: number;
   tradesOpened: string[]; // market tickers
@@ -31,24 +32,46 @@ export interface EngineTickResult {
  * `opts.latestBrti` lets a caller with its own live feed (the standalone
  * collector, which holds a persistent websocket) skip the one-shot fetch;
  * omitting it makes this safe to call from a stateless API route too.
+ *
+ * Market sync/settlement (Kalshi REST, unauthenticated) and BRTI ingestion
+ * (Kalshi websocket, authenticated) are independent Kalshi integrations —
+ * a BRTI outage or misconfiguration must never prevent market detection
+ * from running, so failures there are caught locally rather than aborting
+ * the whole tick.
  */
 export async function runEngineTick(opts: { latestBrti?: BrtiTick } = {}): Promise<EngineTickResult> {
   const now = new Date();
   const settings = await getSettings();
 
-  const brti = opts.latestBrti ?? (await fetchBrtiOnce());
-  await ingestBrtiTick(brti);
+  let brti: BrtiTick | null = null;
+  let brtiError: string | null = null;
+  try {
+    brti = opts.latestBrti ?? (await fetchBrtiOnce());
+    await ingestBrtiTick(brti);
+  } catch (err) {
+    brtiError = err instanceof Error ? err.message : "BRTI fetch failed";
+    console.error("[engine] BRTI ingestion failed", err);
+  }
 
   const openMarkets = await syncMarkets(now);
   const volatility = await computeRollingVolatility(settings.lookbackMarkets, now);
 
   const tradesOpened: string[] = [];
-  for (const market of openMarkets) {
-    const opened = await processMarket(market, brti, volatility, settings, now);
-    if (opened) tradesOpened.push(market.id);
+  if (brti) {
+    for (const market of openMarkets) {
+      const opened = await processMarket(market, brti, volatility, settings, now);
+      if (opened) tradesOpened.push(market.id);
+    }
   }
 
-  return { now, brti, volatility, openMarkets: openMarkets.length, tradesOpened };
+  return {
+    now,
+    brti,
+    brtiError,
+    volatility,
+    openMarkets: openMarkets.length,
+    tradesOpened,
+  };
 }
 
 async function processMarket(

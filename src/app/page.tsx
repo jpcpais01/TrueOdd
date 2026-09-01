@@ -11,7 +11,7 @@ import EmptyState from "@/components/dashboard/EmptyState";
 import Panel from "@/components/ui/Panel";
 
 export default function DashboardPage() {
-  const { state, error } = useAppState({ heartbeat: true });
+  const { state, error, tickError } = useAppState({ heartbeat: true });
   const now = useNow(1000);
 
   if (error && !state) {
@@ -38,6 +38,18 @@ export default function DashboardPage() {
 
   return (
     <div>
+      {tickError && (
+        <Panel glow="no" className="mb-3 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-arcade-no">✕</span>
+            <span className="font-display text-[9px] tracking-wide text-arcade-no">
+              BRTI FEED ERROR
+            </span>
+          </div>
+          <p className="mt-1.5 text-xs leading-relaxed text-arcade-dim">{tickError}</p>
+        </Panel>
+      )}
+
       {state.warmup && (
         <WarmupBanner
           marketsUsed={state.volatility.marketsUsed}

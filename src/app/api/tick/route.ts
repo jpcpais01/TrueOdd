@@ -28,6 +28,7 @@ export async function POST() {
       skipped: false,
       now: result.now,
       brti: result.brti,
+      brtiError: result.brtiError,
       volatility: result.volatility,
       openMarkets: result.openMarkets,
       tradesOpened: result.tradesOpened,
