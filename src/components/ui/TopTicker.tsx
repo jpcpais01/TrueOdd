@@ -6,7 +6,12 @@ import { formatPrice } from "@/lib/format";
 import clsx from "@/lib/clsx";
 
 export default function TopTicker() {
-  const { state, error } = useAppState();
+  // Always mounted (root layout), so this is what keeps data flowing when
+  // the user is on /analytics or /settings and the dashboard page (which
+  // also runs the heartbeat) isn't mounted. Shares its SWR cache key with
+  // the dashboard's own heartbeat when both are mounted, so it's one
+  // deduped poll cycle, not two.
+  const { state, error } = useAppState({ heartbeat: true });
   const now = useNow(1000);
 
   const brtiAgeSec = state?.brti

@@ -3,7 +3,7 @@
 import useSWR from "swr";
 import type { AppStateDTO, AnalyticsDTO } from "@/types/api";
 
-const CLIENT_FETCH_TIMEOUT_MS = 4_000;
+const CLIENT_FETCH_TIMEOUT_MS = 3_000;
 
 /**
  * A hung request (dropped connection, a stalled proxy) would otherwise
@@ -79,9 +79,9 @@ export function useAppState(opts: { heartbeat?: boolean } = {}) {
       }
     },
     {
-      refreshInterval: opts.heartbeat ? 1000 : 5000,
+      refreshInterval: opts.heartbeat ? 500 : 5000,
       revalidateOnFocus: true,
-      dedupingInterval: 800,
+      dedupingInterval: 400,
     },
   );
 
